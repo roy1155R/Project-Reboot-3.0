@@ -1050,8 +1050,12 @@ DWORD WINAPI Main(LPVOID)
             bEnableBotTick = false;
         }
 
+        // Same as the "Lategame" checkbox: late zone, loadout and shield on landing.
+        if (Settings.count("lategame") && Addresses::SetZoneToIndex)
+            SetIsLategame(Settings["lategame"] == "1");
+
         HyperFNLoadBusSettings();
-        LOG_INFO(LogDev, "[HyperFN] Settings: playlist {} | bus {} s after {} players", PlaylistName, AutoBusStartSeconds, NumRequiredPlayersToStart);
+        LOG_INFO(LogDev, "[HyperFN] Settings: playlist {} | bus {} s after {} players | lategame {}", PlaylistName, AutoBusStartSeconds, NumRequiredPlayersToStart, Globals::bLateGame.load());
         CreateThread(0, 0, HyperFNThread, 0, 0, 0);
     }
 
