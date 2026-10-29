@@ -3,6 +3,7 @@
 #include "FortLootPackage.h"
 #include "FortGameModeAthena.h"
 #include "gui.h"
+#include "KismetStringLibrary.h"
 
 bool ABuildingContainer::SpawnLoot(AFortPawn* Pawn)
 {
@@ -25,8 +26,22 @@ bool ABuildingContainer::SpawnLoot(AFortPawn* Pawn)
 
 	auto LootDrops = PickLootDrops(RedirectedLootTier, GameState->GetWorldLevel(), -1, bDebugPrintLooting);
 
-	// HyperFN: one line per opened container, to find out why some chests open empty.
-	LOG_INFO(LogInteraction, "[HyperFN] Container {} tier {} -> {} | world level {} | {} drops", this->GetName(), GetSearchLootTierGroup().ToString(), RedirectedLootTier.ToString(), GameState->GetWorldLevel(), LootDrops.size());
+	// HyperFN: the tier roll can land on an empty package, and some chest variants point at tier groups
+	// that do not exist in this playlist; never let a chest open empty.
+	for (int Attempt = 0; LootDrops.empty() && Attempt < 3; ++Attempt)
+		LootDrops = PickLootDrops(RedirectedLootTier, GameState->GetWorldLevel(), -1, bDebugPrintLooting);
+
+	bool bUsedFallback = false;
+
+	if (LootDrops.empty() && this->GetName().contains("Chest"))
+	{
+		static auto TreasureTier = UKismetStringLibrary::Conv_StringToName(L"Loot_AthenaTreasure");
+		LootDrops = PickLootDrops(TreasureTier, GameState->GetWorldLevel(), -1, bDebugPrintLooting);
+		bUsedFallback = true;
+	}
+
+	// HyperFN: one line per opened container.
+	LOG_INFO(LogInteraction, "[HyperFN] Container {} tier {} -> {} | world level {} | {} drops{}", this->GetName(), GetSearchLootTierGroup().ToString(), RedirectedLootTier.ToString(), GameState->GetWorldLevel(), LootDrops.size(), bUsedFallback ? " (fallback Loot_AthenaTreasure)" : "");
 
 	for (auto& lootDrop : LootDrops)
 	{

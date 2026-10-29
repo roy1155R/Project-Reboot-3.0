@@ -488,6 +488,72 @@ void AFortPlayerControllerAthena::ServerAcknowledgePossessionHook(APlayerControl
 
 				LOG_INFO(LogDev, "[HyperFN] {} backpack {} -> {}", PlayerName, Loadout["backpack"], BID ? "applied" : "not found");
 			}
+
+			// Pickaxe, glider and contrail live in the controller's CosmeticLoadoutPC (AddPickaxeToInventory reads it),
+			// and the pawn keeps its own copy that the clients use for the glider visuals.
+			auto ControllerLoadout = ControllerAsFort ? ControllerAsFort->GetCosmeticLoadout() : nullptr;
+			static auto Pawn_CosmeticLoadoutOffset = PawnAsFort->GetOffset("CosmeticLoadout", false);
+			auto PawnLoadout = Pawn_CosmeticLoadoutOffset != -1 ? PawnAsFort->GetPtr<FFortAthenaLoadout>(Pawn_CosmeticLoadoutOffset) : nullptr;
+
+			auto LoadCosmetic = [&](const std::string& Key, const std::string& Folder, const wchar_t* ClassName) -> UObject*
+			{
+				if (!Loadout.count(Key) || Loadout[Key].empty())
+					return nullptr;
+
+				auto& Id = Loadout[Key];
+				auto Object = FindObject(Id + "." + Id, nullptr, ANY_PACKAGE);
+
+				if (!Object)
+					Object = LoadObject("/Game/Athena/Items/Cosmetics/" + Folder + "/" + Id + "." + Id, FindObject<UClass>(ClassName));
+
+				LOG_INFO(LogDev, "[HyperFN] {} {} {} -> {}", PlayerName, Key, Id, Object ? "found" : "not found");
+				return Object;
+			};
+
+			auto SetLoadoutField = [&](const std::string& Field, UObject* Value)
+			{
+				auto Offset = FindOffsetStruct("/Script/FortniteGame.FortAthenaLoadout", Field, false);
+
+				if (Offset == -1 || !Value)
+					return;
+
+				if (ControllerLoadout)
+					*(UObject**)(__int64(ControllerLoadout) + Offset) = Value;
+
+				if (PawnLoadout)
+					*(UObject**)(__int64(PawnLoadout) + Offset) = Value;
+			};
+
+			if (auto PID = LoadCosmetic("pickaxe", "Pickaxes", L"/Script/FortniteGame.AthenaPickaxeItemDefinition"))
+			{
+				static auto WeaponDefinitionOffset = FindOffsetStruct("/Script/FortniteGame.AthenaPickaxeItemDefinition", "WeaponDefinition");
+				auto WeaponDefinition = PID->Get<UFortItemDefinition*>(WeaponDefinitionOffset);
+
+				if (WeaponDefinition)
+				{
+					SetLoadoutField("Pickaxe", PID);
+
+					// The default pickaxe may already be in the inventory; swap it like "cheat setpickaxe".
+					auto WorldInventory = ControllerAsFort ? ControllerAsFort->GetWorldInventory() : nullptr;
+					auto PickaxeInstance = WorldInventory ? WorldInventory->GetPickaxeInstance() : nullptr;
+
+					if (PickaxeInstance && PickaxeInstance->GetItemEntry()->GetItemDefinition() != WeaponDefinition)
+					{
+						WorldInventory->RemoveItem(PickaxeInstance->GetItemEntry()->GetItemGuid(), nullptr, PickaxeInstance->GetItemEntry()->GetCount(), true);
+						auto NewAndModifiedInstances = WorldInventory->AddItem(WeaponDefinition, nullptr, 1);
+						WorldInventory->Update();
+
+						if (NewAndModifiedInstances.first.size() > 0 && NewAndModifiedInstances.first[0])
+							ControllerAsFort->ClientEquipItem(NewAndModifiedInstances.first[0]->GetItemEntry()->GetItemGuid(), true);
+					}
+				}
+			}
+
+			SetLoadoutField("Glider", LoadCosmetic("glider", "Gliders", L"/Script/FortniteGame.AthenaGliderItemDefinition"));
+			SetLoadoutField("SkyDiveContrail", LoadCosmetic("contrail", "Contrails", L"/Script/FortniteGame.AthenaSkyDiveContrailItemDefinition"));
+
+			PawnAsFort->ForceNetUpdate();
+			ControllerAsFort->ForceNetUpdate();
 		}
 
 		return;
