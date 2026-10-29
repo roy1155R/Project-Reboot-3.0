@@ -27,6 +27,50 @@
 
 void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPawn* PawnAsFort, AFortPlayerState* PlayerStateAsFort); // FortPlayerControllerAthena.cpp
 
+// Victory Royale: place 1, the game state's winner (spectators read it) and the winner's own victory screen.
+static void HyperFNAnnounceWinner(AFortGameStateAthena* GameState, AFortPlayerStateAthena* WinnerState, APawn* FinisherPawn, UFortWeaponItemDefinition* FinishingWeapon, uint8_t DeathCause)
+{
+	LOG_INFO(LogDev, "[HyperFN] Winner {}", WinnerState->GetPlayerName().ToString());
+
+	WinnerState->GetPlace() = 1;
+	static auto OnRep_PlaceFn = FindObject<UFunction>(L"/Script/FortniteGame.FortPlayerStateAthena.OnRep_Place");
+
+	if (OnRep_PlaceFn)
+		WinnerState->ProcessEvent(OnRep_PlaceFn);
+
+	WinnerState->ForceNetUpdate();
+
+	static auto WinningPlayerStateOffset = GameState->GetOffset("WinningPlayerState", false);
+
+	if (WinningPlayerStateOffset != -1)
+	{
+		GameState->Get<APlayerState*>(WinningPlayerStateOffset) = WinnerState;
+
+		static auto OnRep_WinningPlayerStateFn = FindObject<UFunction>(L"/Script/FortniteGame.FortGameStateAthena.OnRep_WinningPlayerState");
+
+		if (OnRep_WinningPlayerStateFn)
+			GameState->ProcessEvent(OnRep_WinningPlayerStateFn);
+	}
+
+	GameState->ForceNetUpdate();
+
+	auto WinnerController = Cast<AFortPlayerControllerAthena>(WinnerState->GetOwner());
+
+	if (!WinnerController)
+		return;
+
+	struct { APawn* FinisherPawn; UFortWeaponItemDefinition* FinishingWeapon; uint8_t DeathCause; } Params{ FinisherPawn, FinishingWeapon, DeathCause };
+
+	static auto ClientNotifyWonFn = FindObject<UFunction>(L"/Script/FortniteGame.FortPlayerControllerAthena.ClientNotifyWon");
+	static auto ClientNotifyTeamWonFn = FindObject<UFunction>(L"/Script/FortniteGame.FortPlayerControllerAthena.ClientNotifyTeamWon");
+
+	if (ClientNotifyWonFn)
+		WinnerController->ProcessEvent(ClientNotifyWonFn, &Params);
+
+	if (ClientNotifyTeamWonFn)
+		WinnerController->ProcessEvent(ClientNotifyTeamWonFn, &Params);
+}
+
 void AFortPlayerController::ClientReportDamagedResourceBuilding(ABuildingSMActor* BuildingSMActor, EFortResourceType PotentialResourceType, int PotentialResourceCount, bool bDestroyed, bool bJustHitWeakspot)
 {
 	static auto fn = FindObject<UFunction>(L"/Script/FortniteGame.FortPlayerController.ClientReportDamagedResourceBuilding");
@@ -1601,6 +1645,11 @@ void AFortPlayerController::ClientOnPawnDiedHook(AFortPlayerController* PlayerCo
 					}
 
 					RemoveFromAlivePlayers(GameMode, PlayerController, KillerPlayerState == DeadPlayerState ? nullptr : KillerPlayerState, KillerPawn, KillerWeaponDef, DeathCause, 0);
+
+					// HyperFN: 14.60 does not announce the last team standing by itself (the winner kept playing as in
+					// creative); tell the winner and everyone spectating, like Reboot Ultimate does.
+					if (GameState->GetTeamsLeft() == 1 && KillerPlayerState && KillerPlayerState != DeadPlayerState)
+						HyperFNAnnounceWinner(GameState, KillerPlayerState, KillerPawn, KillerWeaponDef, DeathCause);
 
 					/*
 
