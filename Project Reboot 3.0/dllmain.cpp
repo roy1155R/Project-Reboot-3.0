@@ -79,9 +79,16 @@ static void HyperFNStartBus(const char* Reason)
     bStartedBus = true;
     AmountOfPlayersWhenBusStart = GameState->GetPlayersLeft();
 
-    LOG_INFO(LogDev, "[HyperFN] Starting bus ({})", Reason);
-    GameMode->StartAircraftPhase();
+    LOG_INFO(LogDev, "[HyperFN] Starting bus ({}){}", Reason, Globals::bLateGame.load() ? " | lategame" : "");
+
+    // Like the GUI: lategame moves the aircraft over the last zone and hands out the loadout once everyone dropped.
+    if (Globals::bLateGame.load())
+        CreateThread(0, 0, LateGameThread, 0, 0, 0);
+    else
+        GameMode->StartAircraftPhase();
 }
+
+void HyperFNTickReapply(); // FortPlayerController.cpp
 
 static DWORD WINAPI HyperFNThread(LPVOID)
 {
@@ -89,6 +96,7 @@ static DWORD WINAPI HyperFNThread(LPVOID)
     {
         Sleep(1000);
         HyperFNLoadBusSettings();
+        HyperFNTickReapply();
 
         if (!Globals::bStartedListening)
             continue;

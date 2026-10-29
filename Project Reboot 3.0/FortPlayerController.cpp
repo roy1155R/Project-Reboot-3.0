@@ -24,8 +24,40 @@
 #include "gui.h"
 #include "FortAthenaMutator_InventoryOverride.h"
 #include "FortAthenaMutator_TDM.h"
+#include <mutex>
 
 void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPawn* PawnAsFort, AFortPlayerState* PlayerStateAsFort); // FortPlayerControllerAthena.cpp
+
+static void HyperFNApplyLoadout(AFortPlayerController* Controller)
+{
+	if (Globals::bNoMCP && Controller && Controller->IsValidLowLevel())
+		HyperFNApplyLoadout(Controller, Cast<AFortPlayerPawn>(Controller->GetMyFortPawn()), Cast<AFortPlayerState>(Controller->GetPlayerState()));
+}
+
+// A slow client can still be loading the warmup island when its loading screen drops and keep the default skin;
+// apply the locker once more a few seconds later (ticked from HyperFNThread in dllmain.cpp).
+static std::mutex HyperFNReapplyLock;
+static std::vector<std::pair<AFortPlayerController*, ULONGLONG>> HyperFNReapplyQueue;
+
+void HyperFNTickReapply()
+{
+	std::vector<AFortPlayerController*> Due;
+
+	{
+		std::lock_guard<std::mutex> Lock(HyperFNReapplyLock);
+		auto Now = GetTickCount64();
+
+		for (auto It = HyperFNReapplyQueue.begin(); It != HyperFNReapplyQueue.end();)
+		{
+			if (Now < It->second) { ++It; continue; }
+			Due.push_back(It->first);
+			It = HyperFNReapplyQueue.erase(It);
+		}
+	}
+
+	for (auto Controller : Due)
+		HyperFNApplyLoadout(Controller);
+}
 
 // Victory Royale: place 1, the game state's winner (spectators read it) and the winner's own victory screen.
 static void HyperFNAnnounceWinner(AFortGameStateAthena* GameState, AFortPlayerStateAthena* WinnerState, APawn* FinisherPawn, UFortWeaponItemDefinition* FinishingWeapon, uint8_t DeathCause)
@@ -285,8 +317,12 @@ void AFortPlayerController::ServerLoadingScreenDroppedHook(UObject* Context, FFr
 	PlayerController->ApplyCosmeticLoadout();
 
 	// HyperFN: ApplyCosmeticLoadout just put the default skin back on; apply the player's locker again.
-	if (Globals::bNoMCP)
-		HyperFNApplyLoadout(PlayerController, Cast<AFortPlayerPawn>(PlayerController->GetMyFortPawn()), Cast<AFortPlayerState>(PlayerController->GetPlayerState()));
+	HyperFNApplyLoadout(PlayerController);
+
+	{
+		std::lock_guard<std::mutex> Lock(HyperFNReapplyLock);
+		HyperFNReapplyQueue.push_back({ PlayerController, GetTickCount64() + 5000 });
+	}
 
 	return ServerLoadingScreenDroppedOriginal(Context, Stack, Ret);
 }
@@ -856,6 +892,9 @@ void AFortPlayerController::ServerAttemptAircraftJumpHook(AFortPlayerController*
 
 			NewPawnAsFort->TeleportTo(AircraftToJumpFrom->GetActorLocation(), FRotator());
 		}
+
+		// HyperFN: RestartPlayer made a fresh pawn for the jump; dress it in the player's locker.
+		HyperFNApplyLoadout(PlayerController);
 	}
 
 	// PlayerController->ServerRestartPlayer();
