@@ -25,6 +25,8 @@
 #include "FortAthenaMutator_InventoryOverride.h"
 #include "FortAthenaMutator_TDM.h"
 
+void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPawn* PawnAsFort, AFortPlayerState* PlayerStateAsFort); // FortPlayerControllerAthena.cpp
+
 void AFortPlayerController::ClientReportDamagedResourceBuilding(ABuildingSMActor* BuildingSMActor, EFortResourceType PotentialResourceType, int PotentialResourceCount, bool bDestroyed, bool bJustHitWeakspot)
 {
 	static auto fn = FindObject<UFunction>(L"/Script/FortniteGame.FortPlayerController.ClientReportDamagedResourceBuilding");
@@ -237,6 +239,10 @@ void AFortPlayerController::ServerLoadingScreenDroppedHook(UObject* Context, FFr
 	auto PlayerController = (AFortPlayerController*)Context;
 
 	PlayerController->ApplyCosmeticLoadout();
+
+	// HyperFN: ApplyCosmeticLoadout just put the default skin back on; apply the player's locker again.
+	if (Globals::bNoMCP)
+		HyperFNApplyLoadout(PlayerController, Cast<AFortPlayerPawn>(PlayerController->GetMyFortPawn()), Cast<AFortPlayerState>(PlayerController->GetPlayerState()));
 
 	return ServerLoadingScreenDroppedOriginal(Context, Stack, Ret);
 }

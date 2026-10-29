@@ -416,36 +416,13 @@ void AFortPlayerControllerAthena::ServerTeleportToPlaygroundLobbyIslandHook(AFor
 	AllCreativePlayerStarts.Free();
 }
 
-void AFortPlayerControllerAthena::ServerAcknowledgePossessionHook(APlayerController* Controller, APawn* Pawn)
+// HyperFN: without MCP the server never reads the player's locker, so everyone spawned in the default skin.
+// The backend writes hyperfn\loadouts\<PlayerName>.txt when it sends a player here; apply it like "cheat applycid".
+// Called on possession and again when the loading screen drops: ApplyCosmeticLoadout runs there and puts the
+// default skin back on in the warmup island.
+void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPawn* PawnAsFort, AFortPlayerState* PlayerStateAsFort)
 {
-	LOG_INFO(LogDev, "ServerAcknowledgePossession!");
-	static auto AcknowledgedPawnOffset = Controller->GetOffset("AcknowledgedPawn");
-
-	const APawn* OldAcknowledgedPawn = Controller->Get<APawn*>(AcknowledgedPawnOffset);
-	Controller->Get<APawn*>(AcknowledgedPawnOffset) = Pawn;
-
-	auto ControllerAsFort = Cast<AFortPlayerController>(Controller);
-	auto PawnAsFort = Cast<AFortPlayerPawn>(Pawn);
-	auto PlayerStateAsFort = Cast<AFortPlayerState>(Pawn->GetPlayerState());
-
-	if (!PawnAsFort)
-		return;
-
-	if (OldAcknowledgedPawn != PawnAsFort)
-	{
-		PawnAsFort->SetShield(StartingShield);
-	}
-
-	if (Globals::bNoMCP)
-	{
-		static auto CustomCharacterPartClass = FindObject<UClass>(L"/Script/FortniteGame.CustomCharacterPart");
-		static auto backpackPart = LoadObject("/Game/Characters/CharacterParts/Backpacks/NoBackpack.NoBackpack", CustomCharacterPartClass);
-
-		// PawnAsFort->ServerChoosePart(EFortCustomPartType::Backpack, backpackPart);
-
-		// HyperFN: without MCP the server never reads the player's locker, so everyone spawned in the default skin.
-		// The backend writes hyperfn\loadouts\<PlayerName>.txt when it sends a player here; apply it like "cheat applycid".
-		if (PlayerStateAsFort)
+		if (ControllerAsFort && PawnAsFort && PlayerStateAsFort)
 		{
 			auto PlayerName = PlayerStateAsFort->GetPlayerName().ToString();
 			auto Loadout = HyperFN::ReadKeyValues("hyperfn\\loadouts\\" + PlayerName + ".txt");
@@ -552,10 +529,39 @@ void AFortPlayerControllerAthena::ServerAcknowledgePossessionHook(APlayerControl
 			SetLoadoutField("Glider", LoadCosmetic("glider", "Gliders", L"/Script/FortniteGame.AthenaGliderItemDefinition"));
 			SetLoadoutField("SkyDiveContrail", LoadCosmetic("contrail", "Contrails", L"/Script/FortniteGame.AthenaSkyDiveContrailItemDefinition"));
 
+			// Keep the loadout struct in step with what we applied, so anything reading it gets our skin too.
+			SetLoadoutField("Character", LoadCosmetic("character", "Characters", L"/Script/FortniteGame.AthenaCharacterItemDefinition"));
+			SetLoadoutField("Backpack", LoadCosmetic("backpack", "Backpacks", L"/Script/FortniteGame.AthenaBackpackItemDefinition"));
+
+			PlayerStateAsFort->ForceNetUpdate();
 			PawnAsFort->ForceNetUpdate();
 			ControllerAsFort->ForceNetUpdate();
 		}
+}
 
+void AFortPlayerControllerAthena::ServerAcknowledgePossessionHook(APlayerController* Controller, APawn* Pawn)
+{
+	LOG_INFO(LogDev, "ServerAcknowledgePossession!");
+	static auto AcknowledgedPawnOffset = Controller->GetOffset("AcknowledgedPawn");
+
+	const APawn* OldAcknowledgedPawn = Controller->Get<APawn*>(AcknowledgedPawnOffset);
+	Controller->Get<APawn*>(AcknowledgedPawnOffset) = Pawn;
+
+	auto ControllerAsFort = Cast<AFortPlayerController>(Controller);
+	auto PawnAsFort = Cast<AFortPlayerPawn>(Pawn);
+	auto PlayerStateAsFort = Cast<AFortPlayerState>(Pawn->GetPlayerState());
+
+	if (!PawnAsFort)
+		return;
+
+	if (OldAcknowledgedPawn != PawnAsFort)
+	{
+		PawnAsFort->SetShield(StartingShield);
+	}
+
+	if (Globals::bNoMCP)
+	{
+		HyperFNApplyLoadout(ControllerAsFort, PawnAsFort, PlayerStateAsFort);
 		return;
 	}
 
