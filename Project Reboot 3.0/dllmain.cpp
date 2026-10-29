@@ -48,6 +48,65 @@
 #include "FortAIEncounterInfo.h"
 #include "FortServerBotManagerAthena.h"
 #include "botnames.h"
+#include "HyperFN.h"
+
+// HyperFN: bus values from hyperfn\server.ini (re-read every second so the admin panel can change them live).
+static void HyperFNLoadBusSettings()
+{
+    auto Settings = HyperFN::ReadServerSettings();
+
+    if (Settings.count("minplayers"))
+        NumRequiredPlayersToStart = (std::max)(1, std::atoi(Settings["minplayers"].c_str()));
+
+    if (Settings.count("busdelay"))
+        AutoBusStartSeconds = (std::max)(1.f, (float)std::atof(Settings["busdelay"].c_str()));
+}
+
+// What the "Start Bus" button does on chapter 2 and later, where the warmup countdown alone never starts the aircraft.
+static void HyperFNStartBus(const char* Reason)
+{
+    if (bStartedBus)
+        return;
+
+    auto GameMode = (AFortGameModeAthena*)GetWorld()->GetGameMode();
+    if (!GameMode)
+        return;
+
+    auto GameState = Cast<AFortGameStateAthena>(GameMode->GetGameState());
+    if (!GameState)
+        return;
+
+    bStartedBus = true;
+    AmountOfPlayersWhenBusStart = GameState->GetPlayersLeft();
+
+    LOG_INFO(LogDev, "[HyperFN] Starting bus ({})", Reason);
+    GameMode->StartAircraftPhase();
+}
+
+static DWORD WINAPI HyperFNThread(LPVOID)
+{
+    while (true)
+    {
+        Sleep(1000);
+        HyperFNLoadBusSettings();
+
+        if (!Globals::bStartedListening)
+            continue;
+
+        if (HyperFN::TakeCommand("startbus"))
+            HyperFNStartBus("admin panel");
+
+        auto Deadline = HyperFN::BusDeadline.load();
+
+        if (Deadline && GetTickCount64() >= Deadline)
+        {
+            HyperFN::BusDeadline = 0;
+            HyperFNStartBus("countdown ended");
+        }
+    }
+
+    return 0;
+}
 
 /*
 
@@ -977,6 +1036,24 @@ DWORD WINAPI Main(LPVOID)
 #endif
 
     CreateThread(0, 0, GuiThread, 0, 0, 0);
+
+    // HyperFN: playlist and bus settings from the admin panel, read before the map loads.
+    {
+        auto Settings = HyperFN::ReadServerSettings();
+
+        if (Settings.count("playlist") && !Settings["playlist"].empty())
+            PlaylistName = Settings["playlist"];
+
+        if (!Settings.empty())
+        {
+            Globals::bAutoRestart = true; // turns on the bus auto timer in HandleStartingNewPlayer
+            bEnableBotTick = false;
+        }
+
+        HyperFNLoadBusSettings();
+        LOG_INFO(LogDev, "[HyperFN] Settings: playlist {} | bus {} s after {} players", PlaylistName, AutoBusStartSeconds, NumRequiredPlayersToStart);
+        CreateThread(0, 0, HyperFNThread, 0, 0, 0);
+    }
 
     while (SecondsUntilTravel > 0)
     {

@@ -12,6 +12,7 @@
 #include "FortAthenaMutator_InventoryOverride.h"
 #include "FortGadgetItemDefinition.h"
 #include "gui.h"
+#include "HyperFN.h"
 
 void AFortPlayerControllerAthena::StartGhostModeHook(UObject* Context, FFrame* Stack, void* Ret)
 {
@@ -441,6 +442,53 @@ void AFortPlayerControllerAthena::ServerAcknowledgePossessionHook(APlayerControl
 		static auto backpackPart = LoadObject("/Game/Characters/CharacterParts/Backpacks/NoBackpack.NoBackpack", CustomCharacterPartClass);
 
 		// PawnAsFort->ServerChoosePart(EFortCustomPartType::Backpack, backpackPart);
+
+		// HyperFN: without MCP the server never reads the player's locker, so everyone spawned in the default skin.
+		// The backend writes hyperfn\loadouts\<PlayerName>.txt when it sends a player here; apply it like "cheat applycid".
+		if (PlayerStateAsFort)
+		{
+			auto PlayerName = PlayerStateAsFort->GetPlayerName().ToString();
+			auto Loadout = HyperFN::ReadKeyValues("hyperfn\\loadouts\\" + PlayerName + ".txt");
+
+			if (Loadout.count("character") && !Loadout["character"].empty())
+			{
+				auto CID = FindObject(Loadout["character"], nullptr, ANY_PACKAGE);
+
+				if (!CID)
+				{
+					static auto CharacterDefinitionClass = FindObject<UClass>(L"/Script/FortniteGame.AthenaCharacterItemDefinition");
+					CID = LoadObject("/Game/Athena/Items/Cosmetics/Characters/" + Loadout["character"] + "." + Loadout["character"], CharacterDefinitionClass);
+				}
+
+				LOG_INFO(LogDev, "[HyperFN] {} skin {} -> {}", PlayerName, Loadout["character"], CID ? (ApplyCID(PawnAsFort, CID) ? "applied" : "apply failed") : "not found");
+			}
+
+			if (Loadout.count("backpack") && !Loadout["backpack"].empty())
+			{
+				auto BID = FindObject(Loadout["backpack"], nullptr, ANY_PACKAGE);
+
+				if (!BID)
+				{
+					static auto BackpackDefinitionClass = FindObject<UClass>(L"/Script/FortniteGame.AthenaBackpackItemDefinition");
+					BID = LoadObject("/Game/Athena/Items/Cosmetics/Backpacks/" + Loadout["backpack"] + "." + Loadout["backpack"], BackpackDefinitionClass);
+				}
+
+				auto CharacterPartsOffset = BID ? BID->GetOffset("CharacterParts") : -1;
+
+				if (BID && CharacterPartsOffset != -1)
+				{
+					auto& BackpackCharacterParts = BID->Get<TArray<UObject*>>(CharacterPartsOffset);
+
+					for (int i = 0; i < BackpackCharacterParts.Num(); ++i)
+					{
+						if (auto Part = BackpackCharacterParts.at(i))
+							PawnAsFort->ServerChoosePart(EFortCustomPartType::Backpack, Part);
+					}
+				}
+
+				LOG_INFO(LogDev, "[HyperFN] {} backpack {} -> {}", PlayerName, Loadout["backpack"], BID ? "applied" : "not found");
+			}
+		}
 
 		return;
 	}

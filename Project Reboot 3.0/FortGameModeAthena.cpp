@@ -28,6 +28,7 @@
 #include "reboot.h"
 #include "ai.h"
 #include "Map.h"
+#include "HyperFN.h"
 #include "OnlineReplStructs.h"
 #include "BGA.h"
 #include "vendingmachine.h"
@@ -1279,6 +1280,9 @@ void AFortGameModeAthena::Athena_HandleStartingNewPlayerHook(AFortGameModeAthena
 			GameMode->Get<float>(WarmupEarlyCountdownDurationOffset) = EarlyDuration;
 
 			LOG_INFO(LogDev, "Auto starting bus in {}.", AutoBusStartSeconds);
+
+			// HyperFN: on chapter 2 the countdown only shows a timer; HyperFNThread (dllmain) starts the aircraft when it ends.
+			HyperFN::BusDeadline = GetTickCount64() + (unsigned long long)(Duration * 1000);
 		}
 	}
 

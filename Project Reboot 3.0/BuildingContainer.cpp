@@ -25,7 +25,8 @@ bool ABuildingContainer::SpawnLoot(AFortPawn* Pawn)
 
 	auto LootDrops = PickLootDrops(RedirectedLootTier, GameState->GetWorldLevel(), -1, bDebugPrintLooting);
 
-	// LOG_INFO(LogInteraction, "LootDrops.size(): {}", LootDrops.size());
+	// HyperFN: one line per opened container, to find out why some chests open empty.
+	LOG_INFO(LogInteraction, "[HyperFN] Container {} tier {} -> {} | world level {} | {} drops", this->GetName(), GetSearchLootTierGroup().ToString(), RedirectedLootTier.ToString(), GameState->GetWorldLevel(), LootDrops.size());
 
 	for (auto& lootDrop : LootDrops)
 	{

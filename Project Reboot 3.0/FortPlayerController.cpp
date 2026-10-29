@@ -463,7 +463,10 @@ void AFortPlayerController::ServerAttemptInteractHook(UObject* Context, FFrame* 
 		auto SearchBounceData = BuildingContainer->GetPtr<void>(SearchBounceDataOffset);
 
 		if (BuildingContainer->ReadBitfieldValue(bAlreadySearchedOffset, bAlreadySearchedFieldMask))
+		{
+			LOG_INFO(LogInteraction, "[HyperFN] Container {} was already searched", BuildingContainer->GetName());
 			return;
+		}
 
 		// LOG_INFO(LogInteraction, "bAlreadySearchedFieldMask: {}", bAlreadySearchedFieldMask);
 

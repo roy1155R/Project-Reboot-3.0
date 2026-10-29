@@ -43,17 +43,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
-      - name: Build RebootS20
-        working-directory: ${{env.GITHUB_WORKSPACE}}
-        run: msbuild ${{env.SOLUTION_FILE_PATH}} /p:AboveS20=TRUE /t:Clean,Build /p:Configuration=Release
-
-      - name: Upload Artifact with ABOVE_S20
-        uses: actions/upload-artifact@v4
-        with:
-          name: RebootS20
-          path: ${{env.SOLUTION_FILE_PATH}}/x64/Release
-          if-no-files-found: warn
-          retention-days: 90
 
   # GitHub disables scheduled workflows after 60 days without repo activity.
   # Re-enabling the workflow through the API resets that timer without a commit.
