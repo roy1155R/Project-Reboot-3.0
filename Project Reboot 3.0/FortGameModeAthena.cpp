@@ -297,32 +297,8 @@ void AFortGameModeAthena::OnAircraftEnteredDropZoneHook(AFortGameModeAthena* Gam
 
 	OnAircraftEnteredDropZoneOriginal(GameModeAthena, Aircraft);
 
-	if (Globals::bLateGame.load())
-	{
-		auto GameState = Cast<AFortGameStateAthena>(GameModeAthena->GetGameState());
-		GameState->SkipAircraft();
-
-		// HyperFN: SkipAircraft spawns everyone's pawn on the server, but a client sometimes misses the possession and
-		// stays in the bus view. Telling every client about its pawn once more unsticks it.
-		static auto ClientRestartFn = FindObject<UFunction>(L"/Script/Engine.PlayerController.ClientRestart");
-		auto AllControllers = UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFortPlayerControllerAthena::StaticClass());
-		int Resent = 0;
-
-		for (int i = 0; ClientRestartFn && i < AllControllers.Num(); i++)
-		{
-			auto Controller = (AFortPlayerControllerAthena*)AllControllers.at(i);
-			APawn* Pawn = Controller ? Controller->GetMyFortPawn() : nullptr;
-
-			if (!Pawn)
-				continue;
-
-			Controller->ProcessEvent(ClientRestartFn, &Pawn);
-			Resent++;
-		}
-
-		AllControllers.Free();
-		LOG_INFO(LogDev, "[HyperFN] Lategame: dropped everyone, re-sent {} pawns", Resent);
-	}
+	// HyperFN: in lategame the door opens as the aircraft starts crossing the zone, so nobody is dropped here; players
+	// jump when they like and HyperFNGameTick drops whoever is left once it has crossed (HyperFN::LateDropAt).
 }
 
 void SetupEverythingAI() // find better name lol
@@ -1264,6 +1240,93 @@ int AFortGameModeAthena::Athena_PickTeamHook(AFortGameModeAthena* GameMode, uint
 	return NextTeamIndex;
 }
 
+// HyperFN: the warmup countdown the lobby shows. The HUD reads it against server world time (the old code used
+// GetTimeSeconds, so players saw no timer). The aircraft itself is started by HyperFNThread (dllmain) at the deadline.
+void HyperFNStartCountdown(AFortGameModeAthena* GameMode, float Duration)
+{
+	if (HyperFN::BusDeadline.load() || bStartedBus)
+		return;
+
+	auto GameState = GameMode->GetGameStateAthena();
+	float TimeSeconds = GameState->GetServerWorldTimeSeconds();
+
+	static auto WarmupCountdownEndTimeOffset = GameState->GetOffset("WarmupCountdownEndTime");
+	static auto WarmupCountdownStartTimeOffset = GameState->GetOffset("WarmupCountdownStartTime");
+	static auto WarmupCountdownDurationOffset = GameMode->GetOffset("WarmupCountdownDuration");
+	static auto WarmupEarlyCountdownDurationOffset = GameMode->GetOffset("WarmupEarlyCountdownDuration");
+
+	GameState->Get<float>(WarmupCountdownStartTimeOffset) = TimeSeconds;
+	GameState->Get<float>(WarmupCountdownEndTimeOffset) = TimeSeconds + Duration;
+	GameMode->Get<float>(WarmupCountdownDurationOffset) = Duration;
+	GameMode->Get<float>(WarmupEarlyCountdownDurationOffset) = Duration;
+	GameState->ForceNetUpdate();
+
+	LOG_INFO(LogDev, "Auto starting bus in {}.", (int)Duration);
+	HyperFN::BusDeadline = GetTickCount64() + (unsigned long long)(Duration * 1000);
+}
+
+// HyperFN: drops everyone still in the aircraft and tells every client about its pawn once more (a client sometimes
+// misses the possession and stays in the bus view). Game thread only.
+void HyperFNDropEveryone(AFortGameStateAthena* GameState)
+{
+	GameState->SkipAircraft();
+
+	static auto ClientRestartFn = FindObject<UFunction>(L"/Script/Engine.PlayerController.ClientRestart");
+	auto AllControllers = UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFortPlayerControllerAthena::StaticClass());
+	int Resent = 0;
+
+	for (int i = 0; ClientRestartFn && i < AllControllers.Num(); i++)
+	{
+		auto Controller = (AFortPlayerControllerAthena*)AllControllers.at(i);
+		APawn* Pawn = Controller ? Controller->GetMyFortPawn() : nullptr;
+
+		if (!Pawn)
+			continue;
+
+		Controller->ProcessEvent(ClientRestartFn, &Pawn);
+		Resent++;
+	}
+
+	AllControllers.Free();
+	LOG_INFO(LogDev, "[HyperFN] Lategame: dropped everyone left in the aircraft, re-sent {} pawns", Resent);
+}
+
+// HyperFN: called from UNetDriver::TickFlushHook, i.e. on the game thread, twice a second.
+//  - two players in and no countdown yet (a join that slipped past HandleStartingNewPlayer): start it
+//  - the lategame aircraft has crossed the zone: drop whoever is still on board
+void HyperFNGameTick()
+{
+	static ULONGLONG Next = 0;
+	auto Now = GetTickCount64();
+
+	if (Now < Next || !Globals::bStartedListening)
+		return;
+
+	Next = Now + 500;
+
+	auto World = GetWorld();
+	auto GameMode = World ? Cast<AFortGameModeAthena>(World->GetGameMode()) : nullptr;
+
+	if (!GameMode)
+		return;
+
+	auto GameState = GameMode->GetGameStateAthena();
+
+	if (Globals::bAutoRestart && !bStartedBus && !HyperFN::BusDeadline.load() && World->GetNetDriver()
+		&& GameState->GetGamePhase() == EAthenaGamePhase::Warmup && World->GetNetDriver()->GetClientConnections().Num() >= NumRequiredPlayersToStart)
+		HyperFNStartCountdown(GameMode, AutoBusStartSeconds);
+
+	auto DropAt = HyperFN::LateDropAt.load();
+
+	if (DropAt && Now >= DropAt)
+	{
+		HyperFN::LateDropAt = 0;
+
+		if (GameState->GetGamePhase() == EAthenaGamePhase::Aircraft)
+			HyperFNDropEveryone(GameState);
+	}
+}
+
 void AFortGameModeAthena::Athena_HandleStartingNewPlayerHook(AFortGameModeAthena* GameMode, AActor* NewPlayerActor)
 {
 	if (NewPlayerActor == GetLocalPlayerController()) // we dont really need this but it also functions as a nullptr check usually
@@ -1276,36 +1339,8 @@ void AFortGameModeAthena::Athena_HandleStartingNewPlayerHook(AFortGameModeAthena
 
 	LOG_INFO(LogPlayer, "HandleStartingNewPlayer!");
 
-	if (Globals::bAutoRestart)
-	{
-		static int LastNum123 = 15;
-
-		if (GetWorld()->GetNetDriver()->GetClientConnections().Num() >= NumRequiredPlayersToStart && LastNum123 != Globals::AmountOfListens)
-		{
-			LastNum123 = Globals::AmountOfListens;
-
-			float Duration = AutoBusStartSeconds;
-			float EarlyDuration = Duration;
-
-			float TimeSeconds = UGameplayStatics::GetTimeSeconds(GetWorld());
-
-			static auto WarmupCountdownEndTimeOffset = GameState->GetOffset("WarmupCountdownEndTime");
-			static auto WarmupCountdownStartTimeOffset = GameState->GetOffset("WarmupCountdownStartTime");
-			static auto WarmupCountdownDurationOffset = GameMode->GetOffset("WarmupCountdownDuration");
-			static auto WarmupEarlyCountdownDurationOffset = GameMode->GetOffset("WarmupEarlyCountdownDuration");
-
-			GameState->Get<float>(WarmupCountdownEndTimeOffset) = TimeSeconds + Duration;
-			GameMode->Get<float>(WarmupCountdownDurationOffset) = Duration;
-
-			GameState->Get<float>(WarmupCountdownStartTimeOffset) = TimeSeconds;
-			GameMode->Get<float>(WarmupEarlyCountdownDurationOffset) = EarlyDuration;
-
-			LOG_INFO(LogDev, "Auto starting bus in {}.", AutoBusStartSeconds);
-
-			// HyperFN: on chapter 2 the countdown only shows a timer; HyperFNThread (dllmain) starts the aircraft when it ends.
-			HyperFN::BusDeadline = GetTickCount64() + (unsigned long long)(Duration * 1000);
-		}
-	}
+	if (Globals::bAutoRestart && GetWorld()->GetNetDriver()->GetClientConnections().Num() >= NumRequiredPlayersToStart)
+		HyperFNStartCountdown(GameMode, AutoBusStartSeconds);
 
 	static auto XPComponentOffset = NewPlayerActor->GetOffset("XPComponent", false);
 

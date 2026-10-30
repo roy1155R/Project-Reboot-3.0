@@ -887,6 +887,16 @@ void AFortPlayerController::ServerAttemptAircraftJumpHook(AFortPlayerController*
 			GameMode->RestartPlayer(PlayerController);
 		}
 
+		// HyperFN: the player is out of the aircraft now; without this, the lategame drop at the end of the flight
+		// (and later jump presses) would treat them as still on board.
+		if (auto JumpedState = PlayerController->GetPlayerStateAthena())
+		{
+			static auto bInAircraftOffset = JumpedState->GetOffset("bInAircraft");
+			static auto bInAircraftFieldMask = GetFieldMask(JumpedState->GetProperty("bInAircraft"));
+			JumpedState->SetBitfieldValue(bInAircraftOffset, bInAircraftFieldMask, false);
+			JumpedState->ForceNetUpdate();
+		}
+
 		// we are supposed to do some skydivign stuff here but whatever
 	}
 

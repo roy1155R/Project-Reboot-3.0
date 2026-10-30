@@ -22,6 +22,9 @@ namespace HyperFN
 	// GetTickCount64() time at which the bus auto timer ends (0 = no countdown running).
 	extern inline std::atomic<unsigned long long> BusDeadline{ 0 };
 
+	// GetTickCount64() time at which the lategame aircraft has crossed the zone and everyone left is dropped (0 = none).
+	extern inline std::atomic<unsigned long long> LateDropAt{ 0 };
+
 	inline std::string Trim(const std::string& s)
 	{
 		auto b = s.find_first_not_of(" \t\r\n");

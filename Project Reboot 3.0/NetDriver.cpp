@@ -40,8 +40,12 @@ void UNetDriver::RemoveNetworkActor(AActor* Actor)
 	// RenamedStartupActors.Remove(Actor->GetFName());
 }
 
+void HyperFNGameTick(); // FortGameModeAthena.cpp
+
 void UNetDriver::TickFlushHook(UNetDriver* NetDriver)
 {
+	HyperFNGameTick();
+
 	if (bShouldDestroyAllPlayerBuilds) // i hate this
 	{
 		auto AllBuildingSMActors = UGameplayStatics::GetAllActorsOfClass(GetWorld(), ABuildingSMActor::StaticClass());

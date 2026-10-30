@@ -13,6 +13,8 @@
 #include <ImGui/imgui_impl_dx9.h>
 
 #include <string>
+#include <cmath>
+#include "HyperFN.h"
 #include <imgui/imgui_impl_win32.h>
 #include <imgui/imgui_stdlib.h>
 #include <vector>
@@ -582,25 +584,49 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 
 	const FVector ZoneCenterLocation = SafeZoneLocations.at(3);
 
-	FVector LocationToStartAircraft = ZoneCenterLocation;
-	LocationToStartAircraft.Z += 10000;
-
 	auto Aircrafts = GetAircrafts();
 
-	float DropStartTime = GameState->GetServerWorldTimeSeconds() + 5.f;
-	float FlightSpeed = 0.0f;
+	// HyperFN: the aircraft flies straight across the last zone, from one edge to the other in a random direction, at
+	// its normal speed, with the door open from the start (no countdown). Whoever is still on board when it has
+	// crossed is dropped by HyperFNGameTick on the game thread (HyperFN::LateDropAt).
+	static auto FlightInfoOffset = Aircrafts.at(0)->GetOffset("FlightInfo", false);
+	static auto FlightSpeedOffset = Aircrafts.at(0)->GetOffset("FlightSpeed", false);
+
+	float FlightSpeed = FlightInfoOffset != -1 ? Aircrafts.at(0)->GetPtr<FAircraftFlightInfo>(FlightInfoOffset)->GetFlightSpeed()
+		: FlightSpeedOffset != -1 ? Aircrafts.at(0)->Get<float>(FlightSpeedOffset) : 0.f;
+
+	if (FlightSpeed < 500.f)
+		FlightSpeed = 3500.f;
+
+	const float HalfLength = (std::min)((std::max)(FlightSpeed * 12.f, 12000.f), 40000.f); // about 24 s across
+	const float CrossSeconds = HalfLength * 2.f / FlightSpeed;
+	const float Yaw = (float)(rand() % 360);
+	const float YawRad = Yaw * 3.14159265f / 180.f;
+
+	FVector LocationToStartAircraft = ZoneCenterLocation;
+	LocationToStartAircraft.X -= cosf(YawRad) * HalfLength;
+	LocationToStartAircraft.Y -= sinf(YawRad) * HalfLength;
+	LocationToStartAircraft.Z += 10000;
+
+	FRotator FlightRotation{};
+	FlightRotation.Yaw = Yaw;
+
+	const float Now = GameState->GetServerWorldTimeSeconds();
+	const float DropStartTime = Now;
+	const float DropEndTime = Now + CrossSeconds;
+
+	static auto InfoRotationOffset = FindOffsetStruct("/Script/FortniteGame.AircraftFlightInfo", "FlightStartRotation", false);
+	static auto InfoDropEndOffset = FindOffsetStruct("/Script/FortniteGame.AircraftFlightInfo", "TimeTillDropEnd", false);
+	static auto InfoFlightEndOffset = FindOffsetStruct("/Script/FortniteGame.AircraftFlightInfo", "TimeTillFlightEnd", false);
 
 	for (int i = 0; i < Aircrafts.size(); ++i)
 	{
 		auto CurrentAircraft = Aircrafts.at(i);
-		CurrentAircraft->TeleportTo(LocationToStartAircraft, FRotator());
-
-		static auto FlightInfoOffset = CurrentAircraft->GetOffset("FlightInfo", false);
+		CurrentAircraft->TeleportTo(LocationToStartAircraft, FlightRotation);
 
 		if (FlightInfoOffset == -1)
 		{
 			static auto FlightStartLocationOffset = CurrentAircraft->GetOffset("FlightStartLocation");
-			static auto FlightSpeedOffset = CurrentAircraft->GetOffset("FlightSpeed");
 			static auto DropStartTimeOffset = CurrentAircraft->GetOffset("DropStartTime");
 
 			CurrentAircraft->Get<FVector>(FlightStartLocationOffset) = LocationToStartAircraft;
@@ -614,20 +640,34 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 			FlightInfo->GetFlightSpeed() = FlightSpeed;
 			FlightInfo->GetFlightStartLocation() = LocationToStartAircraft;
 			FlightInfo->GetTimeTillDropStart() = DropStartTime;
+
+			if (InfoRotationOffset != -1)
+				*(FRotator*)(__int64(FlightInfo) + InfoRotationOffset) = FlightRotation;
+			if (InfoDropEndOffset != -1)
+				*(float*)(__int64(FlightInfo) + InfoDropEndOffset) = DropEndTime;
+			if (InfoFlightEndOffset != -1)
+				*(float*)(__int64(FlightInfo) + InfoFlightEndOffset) = DropEndTime + 10.f;
 		}
+
+		// The aircraft's own drop window, where the build has one.
+		static auto AircraftDropStartOffset = CurrentAircraft->GetOffset("DropStartTime", false);
+		static auto AircraftDropEndOffset = CurrentAircraft->GetOffset("DropEndTime", false);
+
+		if (AircraftDropStartOffset != -1)
+			CurrentAircraft->Get<float>(AircraftDropStartOffset) = DropStartTime;
+		if (AircraftDropEndOffset != -1)
+			CurrentAircraft->Get<float>(AircraftDropEndOffset) = DropEndTime;
 
 		CurrentAircraft->ForceNetUpdate();
 	}
+
+	HyperFN::LateDropAt = GetTickCount64() + (unsigned long long)((CrossSeconds + 1.f) * 1000.f);
+	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses the zone at yaw {} | speed {} | {} s across", (int)Yaw, (int)FlightSpeed, (int)CrossSeconds);
 
 	while (GameState->GetGamePhase() != EAthenaGamePhase::Aircraft)
 	{
 		Sleep(1000 / MaxTickRate);
 	}
-
-	// HyperFN: no early SkipAircraft here: dropping players right as the phase starts (before they are all seated in
-	// the aircraft) crashed the server. The aircraft already sits over the zone (ForceNetUpdate above), and
-	// OnAircraftEnteredDropZone drops everyone a few seconds later.
-	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft moved over the zone");
 
 	/*
 	static auto MapInfoOffset = GameState->GetOffset("MapInfo");
