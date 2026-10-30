@@ -582,49 +582,56 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 		return 0;
 	}
 
-	const FVector ZoneCenterLocation = SafeZoneLocations.at(3);
+	// HyperFN: the lategame zone (extra.cpp SetZoneToIndexHook) jumps straight to phase 5, so the safe circle the players
+	// end up in is SafeZoneLocations[5] inside the phase 4 ring. The aircraft is aimed at that spot, not at [3].
+	const int LateZoneIndex = (std::min)(5, SafeZoneLocations.Num() - 1);
+	const FVector ZoneCenterLocation = SafeZoneLocations.at(LateZoneIndex);
 
 	auto Aircrafts = GetAircrafts();
 
-	// HyperFN: the aircraft flies straight across the last zone, from one edge to the other in a random direction, at
-	// its normal speed, with the door open from the start (no countdown). Whoever is still on board when it has
-	// crossed is dropped by HyperFNGameTick on the game thread (HyperFN::LateDropAt).
+	// HyperFN: the aircraft flies straight across the lategame zone, from one edge to the other, with the door open from
+	// the start (no countdown). Whoever is still on board when it has crossed is dropped by HyperFNGameTick on the game
+	// thread (HyperFN::LateDropAt).
 	static auto FlightInfoOffset = Aircrafts.at(0)->GetOffset("FlightInfo", false);
 	static auto FlightSpeedOffset = Aircrafts.at(0)->GetOffset("FlightSpeed", false);
 
-	float FlightSpeed = FlightInfoOffset != -1 ? Aircrafts.at(0)->GetPtr<FAircraftFlightInfo>(FlightInfoOffset)->GetFlightSpeed()
-		: FlightSpeedOffset != -1 ? Aircrafts.at(0)->Get<float>(FlightSpeedOffset) : 0.f;
-
-	if (FlightSpeed < 500.f)
-		FlightSpeed = 3500.f;
-
-	const float HalfLength = (std::min)((std::max)(FlightSpeed * 12.f, 12000.f), 40000.f); // about 24 s across
-	const float CrossSeconds = HalfLength * 2.f / FlightSpeed;
+	// The normal bus speed (7500) crossed the zone in a few seconds, so the lategame bus flies slower: 400 m in 20 s.
+	const float HalfLength = 20000.f;
+	const float CrossSeconds = 20.f;
+	const float FlightSpeed = HalfLength * 2.f / CrossSeconds;
 
 	// Only the fields Reboot itself writes are touched (start location, speed, door time): writing the rotation and the
-	// drop-end fields crashed the server. So the aircraft keeps its own heading, and the start point is put on the zone's
-	// near edge along that heading; it then flies through the zone centre to the far edge.
-	FVector Heading = Aircrafts.at(0)->GetActorForwardVector();
-	Heading.Z = 0;
-	float HeadingLength = sqrtf(Heading.X * Heading.X + Heading.Y * Heading.Y);
+	// drop-end fields crashed the server. The clients move the aircraft along the flight's own start rotation, so that
+	// rotation is read (never written) and the start point is put on the zone's near edge along it; the aircraft then
+	// flies through the zone centre to the far edge.
+	float FlightYaw = Aircrafts.at(0)->GetActorRotation().Yaw;
 
-	if (HeadingLength < 0.01f)
+	if (FlightInfoOffset != -1)
 	{
-		Heading.X = 1; Heading.Y = 0;
-		HeadingLength = 1;
+		static auto FlightStartRotationOffset = FindOffsetStruct("/Script/FortniteGame.AircraftFlightInfo", "FlightStartRotation", false);
+
+		if (FlightStartRotationOffset != -1)
+			FlightYaw = ((FRotator*)(__int64(Aircrafts.at(0)->GetPtr<FAircraftFlightInfo>(FlightInfoOffset)) + FlightStartRotationOffset))->Yaw;
 	}
 
+	const float YawRadians = FlightYaw * 3.14159265f / 180.f;
+	const float HeadingX = cosf(YawRadians);
+	const float HeadingY = sinf(YawRadians);
+
 	FVector LocationToStartAircraft = ZoneCenterLocation;
-	LocationToStartAircraft.X -= Heading.X / HeadingLength * HalfLength;
-	LocationToStartAircraft.Y -= Heading.Y / HeadingLength * HalfLength;
+	LocationToStartAircraft.X -= HeadingX * HalfLength;
+	LocationToStartAircraft.Y -= HeadingY * HalfLength;
 	LocationToStartAircraft.Z += 10000;
+
+	FRotator AircraftRotation{};
+	AircraftRotation.Yaw = FlightYaw;
 
 	const float DropStartTime = GameState->GetServerWorldTimeSeconds();
 
 	for (int i = 0; i < Aircrafts.size(); ++i)
 	{
 		auto CurrentAircraft = Aircrafts.at(i);
-		CurrentAircraft->TeleportTo(LocationToStartAircraft, CurrentAircraft->GetActorRotation());
+		CurrentAircraft->TeleportTo(LocationToStartAircraft, AircraftRotation);
 
 		if (FlightInfoOffset == -1)
 		{
@@ -648,7 +655,7 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 	}
 
 	HyperFN::LateDropAt = GetTickCount64() + (unsigned long long)((CrossSeconds + 1.f) * 1000.f);
-	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses the zone | speed {} | {} s across", (int)FlightSpeed, (int)CrossSeconds);
+	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses zone {} at ({}, {}) | heading {} | speed {} | {} s across", LateZoneIndex, (int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds);
 
 	while (GameState->GetGamePhase() != EAthenaGamePhase::Aircraft)
 	{
