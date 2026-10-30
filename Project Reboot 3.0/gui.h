@@ -624,11 +624,10 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 		Sleep(1000 / MaxTickRate);
 	}
 
-	// HyperFN: drop everyone over the last zone as soon as the bus phase starts, instead of showing the bus at the
-	// edge of the map until its door countdown ends.
-	Sleep(300);
-	LOG_INFO(LogDev, "[HyperFN] Lategame: dropping players at the zone");
-	GameState->SkipAircraft();
+	// HyperFN: no early SkipAircraft here: dropping players right as the phase starts (before they are all seated in
+	// the aircraft) crashed the server. The aircraft already sits over the zone (ForceNetUpdate above), and
+	// OnAircraftEnteredDropZone drops everyone a few seconds later.
+	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft moved over the zone");
 
 	/*
 	static auto MapInfoOffset = GameState->GetOffset("MapInfo");
