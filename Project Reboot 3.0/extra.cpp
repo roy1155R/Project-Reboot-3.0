@@ -24,7 +24,11 @@ void SetZoneToIndexHook(AFortGameModeAthena* GameModeAthena, int OverridePhaseMa
 	// the game's own call when the aircraft phase ends would move it on one phase more.
 	if (!HyperFN::ZoneForcing.load() && GetTickCount64() < HyperFN::ZoneLockUntil.load())
 	{
-		LOG_INFO(LogDev, "[HyperFN] Lategame: zone already at phase {}, ignoring the game's zone start", GameModeAthena->Get<int>(GameMode_SafeZonePhaseOffset));
+		static int Ignored = 0;
+
+		if (Ignored++ % 100 == 0)
+			LOG_INFO(LogDev, "[HyperFN] Lategame: zone already at phase {}, ignoring the game's zone start ({} times)", GameModeAthena->Get<int>(GameMode_SafeZonePhaseOffset), Ignored);
+
 		return;
 	}
 
