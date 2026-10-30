@@ -82,8 +82,20 @@ static void HyperFNSpawnInitialSafeZoneHook(AFortGameModeAthena* GameMode)
             GameState->Get<float>(SafeZonesStartTimeOffset) = -1.f;
         }
 
+        // It keeps asking while the game mode does not count its zone as active (the lategame zone was spawned during the
+        // aircraft phase), so mark it active as SpawnInitialSafeZone would.
+        static auto bSafeZoneActiveOffset = GameMode->GetOffset("bSafeZoneActive", false);
+        bool bWasActive = true;
+
+        if (bSafeZoneActiveOffset != -1)
+        {
+            static auto bSafeZoneActiveFieldMask = GetFieldMask(GameMode->GetProperty("bSafeZoneActive"));
+            bWasActive = GameMode->ReadBitfieldValue(bSafeZoneActiveOffset, bSafeZoneActiveFieldMask);
+            GameMode->SetBitfieldValue(bSafeZoneActiveOffset, bSafeZoneActiveFieldMask, true);
+        }
+
         if (Skipped++ % 300 == 0)
-            LOG_INFO(LogDev, "[HyperFN] SpawnInitialSafeZone: the zone is already up, skipping ({} times)", Skipped);
+            LOG_INFO(LogDev, "[HyperFN] SpawnInitialSafeZone: the zone is already up, skipping ({} times, bSafeZoneActive {} was {})", Skipped, bSafeZoneActiveOffset != -1, bWasActive);
 
         return;
     }

@@ -624,9 +624,9 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds)
 	static auto FlightInfoOffset = Aircrafts.at(0)->GetOffset("FlightInfo", false);
 	static auto FlightSpeedOffset = Aircrafts.at(0)->GetOffset("FlightSpeed", false);
 
-	// The normal bus speed (7500) crossed the lategame circle (radius about 140 m) in a few seconds; this one takes about
-	// 17 s for it.
-	const float FlightSpeed = 1700.f;
+	// The normal bus speed (7500) crossed the lategame storm (radius 100-140 m, it differs per match) in a few seconds;
+	// this one takes about 15 s whatever its size.
+	const float FlightSpeed = (std::min)((std::max)(HalfLength * 2.f / 15.f, 1000.f), 3000.f);
 	const float CrossSeconds = HalfLength * 2.f / FlightSpeed;
 
 	// Like Erbium's lategame (StartAircraftPhase hook): the flight is restarted from now, with the drop window open from
