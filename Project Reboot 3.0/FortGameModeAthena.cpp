@@ -301,6 +301,27 @@ void AFortGameModeAthena::OnAircraftEnteredDropZoneHook(AFortGameModeAthena* Gam
 	{
 		auto GameState = Cast<AFortGameStateAthena>(GameModeAthena->GetGameState());
 		GameState->SkipAircraft();
+
+		// HyperFN: SkipAircraft spawns everyone's pawn on the server, but a client sometimes misses the possession and
+		// stays in the bus view. Telling every client about its pawn once more unsticks it.
+		static auto ClientRestartFn = FindObject<UFunction>(L"/Script/Engine.PlayerController.ClientRestart");
+		auto AllControllers = UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFortPlayerControllerAthena::StaticClass());
+		int Resent = 0;
+
+		for (int i = 0; ClientRestartFn && i < AllControllers.Num(); i++)
+		{
+			auto Controller = (AFortPlayerControllerAthena*)AllControllers.at(i);
+			APawn* Pawn = Controller ? Controller->GetMyFortPawn() : nullptr;
+
+			if (!Pawn)
+				continue;
+
+			Controller->ProcessEvent(ClientRestartFn, &Pawn);
+			Resent++;
+		}
+
+		AllControllers.Free();
+		LOG_INFO(LogDev, "[HyperFN] Lategame: dropped everyone, re-sent {} pawns", Resent);
 	}
 }
 

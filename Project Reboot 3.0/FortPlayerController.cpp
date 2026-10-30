@@ -819,8 +819,26 @@ void AFortPlayerController::ServerAttemptAircraftJumpHook(AFortPlayerController*
 	if (!PlayerController)
 		return ServerAttemptAircraftJumpOriginal(PC, ClientRotation);
 
-	// if (!PlayerController->bInAircraft) 
+	// if (!PlayerController->bInAircraft)
 		// return;
+
+	// HyperFN: in lategame SkipAircraft already gave everyone a pawn. A client that missed it is still "in the bus"
+	// and keeps pressing jump; RestartPlayer would make a new pawn each time. Re-send the pawn it has instead.
+	{
+		auto PlayerStateAthena = PlayerController->GetPlayerStateAthena();
+		APawn* ExistingPawn = PlayerController->GetMyFortPawn();
+
+		if (Globals::bLateGame.load() && PlayerStateAthena && !PlayerStateAthena->IsInAircraft() && ExistingPawn)
+		{
+			static auto ClientRestartFn = FindObject<UFunction>(L"/Script/Engine.PlayerController.ClientRestart");
+			LOG_INFO(LogDev, "[HyperFN] {} pressed jump outside the aircraft; re-sending its pawn", PlayerStateAthena->GetPlayerName().ToString());
+
+			if (ClientRestartFn)
+				PlayerController->ProcessEvent(ClientRestartFn, &ExistingPawn);
+
+			return;
+		}
+	}
 
 	LOG_INFO(LogDev, "ServerAttemptAircraftJumpHook!");
 
