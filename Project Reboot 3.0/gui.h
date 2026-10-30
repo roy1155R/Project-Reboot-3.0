@@ -615,12 +615,20 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 			FlightInfo->GetFlightStartLocation() = LocationToStartAircraft;
 			FlightInfo->GetTimeTillDropStart() = DropStartTime;
 		}
+
+		CurrentAircraft->ForceNetUpdate();
 	}
 
 	while (GameState->GetGamePhase() != EAthenaGamePhase::Aircraft)
 	{
 		Sleep(1000 / MaxTickRate);
 	}
+
+	// HyperFN: drop everyone over the last zone as soon as the bus phase starts, instead of showing the bus at the
+	// edge of the map until its door countdown ends.
+	Sleep(300);
+	LOG_INFO(LogDev, "[HyperFN] Lategame: dropping players at the zone");
+	GameState->SkipAircraft();
 
 	/*
 	static auto MapInfoOffset = GameState->GetOffset("MapInfo");
