@@ -1,17 +1,21 @@
 #pragma once
 
 // HyperFN additions: the HyperFN admin panel controls the game server through small files next to the game executable
-// (the server's working directory):
-//   hyperfn\server.ini                   playlist=<path>, minplayers=<n>, busdelay=<seconds>
-//                                        playlist is read once at start; the bus values are re-read every second
-//   hyperfn\command.txt                  "startbus" starts the aircraft now; the file is deleted once handled
+// (the server's working directory). Each server started by the panel gets "-hyperfn=<id>" on its command line and
+// its own folder, so several servers can run from one game install:
+//   hyperfn\<id>\server.ini              playlist=<path>, minplayers=<n>, busdelay=<seconds>, lategame=0|1, port=<udp>
+//                                        playlist, lategame and port are read once at start; the bus values every second
+//   hyperfn\<id>\command.txt             "startbus" starts the aircraft now; the file is deleted once handled
 //   hyperfn\loadouts\<PlayerName>.txt    character=CID_..., backpack=BID_...; applied when the player's pawn spawns
+// Without -hyperfn the files sit directly in hyperfn\ (older panels).
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <string>
+#include <windows.h>
 
 namespace HyperFN
 {
@@ -25,6 +29,24 @@ namespace HyperFN
 			return "";
 		auto e = s.find_last_not_of(" \t\r\n");
 		return s.substr(b, e - b + 1);
+	}
+
+	// hyperfn\<id>\ from "-hyperfn=<id>" on the command line, or hyperfn\ without it.
+	inline const std::string& Dir()
+	{
+		static std::string Value = []
+		{
+			std::string Cmd = GetCommandLineA();
+			auto At = Cmd.find("-hyperfn=");
+			if (At == std::string::npos)
+				return std::string("hyperfn\\");
+			auto Id = Cmd.substr(At + 9, Cmd.find_first_of(" \"", At + 9) - (At + 9));
+			for (char c : Id)
+				if (!isalnum((unsigned char)c) && c != '-' && c != '_')
+					return std::string("hyperfn\\");
+			return Id.empty() ? std::string("hyperfn\\") : "hyperfn\\" + Id + "\\";
+		}();
+		return Value;
 	}
 
 	// key=value lines; keys are lowercased, missing file gives an empty map.
@@ -52,13 +74,26 @@ namespace HyperFN
 
 	inline std::map<std::string, std::string> ReadServerSettings()
 	{
-		return ReadKeyValues("hyperfn\\server.ini");
+		return ReadKeyValues(Dir() + "server.ini");
 	}
 
-	// True once when hyperfn\command.txt holds Command; the file is removed so it runs only once.
+	// UDP port the game listens on (server.ini port=, default 7777), read once.
+	inline int Port()
+	{
+		static int Value = []
+		{
+			auto Settings = ReadServerSettings();
+			int P = Settings.count("port") ? std::atoi(Settings["port"].c_str()) : 0;
+			return P >= 1024 && P <= 65535 ? P : 7777;
+		}();
+		return Value;
+	}
+
+	// True once when hyperfn\<id>\command.txt holds Command; the file is removed so it runs only once.
 	inline bool TakeCommand(const std::string& Command)
 	{
-		std::ifstream File("hyperfn\\command.txt");
+		std::string Path = Dir() + "command.txt";
+		std::ifstream File(Path);
 		if (!File)
 			return false;
 
@@ -69,7 +104,7 @@ namespace HyperFN
 		if (Trim(Content) != Command)
 			return false;
 
-		std::remove("hyperfn\\command.txt");
+		std::remove(Path.c_str());
 		return true;
 	}
 }

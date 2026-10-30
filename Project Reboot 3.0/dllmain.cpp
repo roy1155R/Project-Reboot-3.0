@@ -1063,7 +1063,7 @@ DWORD WINAPI Main(LPVOID)
             SetIsLategame(Settings["lategame"] == "1");
 
         HyperFNLoadBusSettings();
-        LOG_INFO(LogDev, "[HyperFN] Settings: playlist {} | bus {} s after {} players | lategame {}", PlaylistName, AutoBusStartSeconds, NumRequiredPlayersToStart, Globals::bLateGame.load());
+        LOG_INFO(LogDev, "[HyperFN] Settings: playlist {} | bus {} s after {} players | lategame {} | port {} | folder {}", PlaylistName, AutoBusStartSeconds, NumRequiredPlayersToStart, Globals::bLateGame.load(), HyperFN::Port(), HyperFN::Dir());
         CreateThread(0, 0, HyperFNThread, 0, 0, 0);
     }
 

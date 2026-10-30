@@ -4,6 +4,7 @@
 #include "Actor.h"
 
 #include "reboot.h"
+#include "HyperFN.h"
 
 AWorldSettings* UWorld::K2_GetWorldSettings()
 {
@@ -21,7 +22,8 @@ void UWorld::Listen()
 
 	constexpr bool bUseBeacons = true;
 
-	int Port = 7777 - Globals::AmountOfListens + 1;
+	// HyperFN: the panel gives each server its own port (server.ini port=), so several can run at once.
+	int Port = HyperFN::Port() - Globals::AmountOfListens + 1;
 
 	if (bUseBeacons)
 	{
