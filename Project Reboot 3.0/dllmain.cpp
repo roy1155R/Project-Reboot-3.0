@@ -72,7 +72,12 @@ static void HyperFNSpawnInitialSafeZoneHook(AFortGameModeAthena* GameMode)
 {
     if (GameMode && GameMode->GetSafeZoneIndicator())
     {
-        LOG_INFO(LogDev, "[HyperFN] SpawnInitialSafeZone: the zone is already up, skipping");
+        // The game can ask every frame; log it now and then only.
+        static int Skipped = 0;
+
+        if (Skipped++ % 300 == 0)
+            LOG_INFO(LogDev, "[HyperFN] SpawnInitialSafeZone: the zone is already up, skipping ({} times)", Skipped);
+
         return;
     }
 
@@ -126,14 +131,44 @@ static void HyperFNHookSpawnInitialSafeZone()
     Hooking::MinHook::Hook((PVOID)Addr, (PVOID)HyperFNSpawnInitialSafeZoneHook, (PVOID*)&HyperFNSpawnInitialSafeZoneOriginal);
 }
 
-// Lategame zone together with the aircraft (game thread).
-static void HyperFNSpawnLateZone(AFortGameModeAthena* GameMode)
+static void HyperFNLogZone(AFortGameModeAthena* GameMode, AFortGameStateAthena* GameState, const char* When)
 {
-    if (!HyperFNSpawnInitialSafeZoneOriginal)
+    static auto SafeZonePhaseOffset = GameMode->GetOffset("SafeZonePhase");
+    static auto SafeZonesStartTimeOffset = GameState->GetOffset("SafeZonesStartTime");
+
+    LOG_INFO(LogDev, "[HyperFN] Zone {}: game phase {} | zone phase {} | indicator {} | SafeZonesStartTime {} | time {}", When,
+        (int)GameState->GetGamePhase(), GameMode->Get<int>(SafeZonePhaseOffset), GameMode->GetSafeZoneIndicator() ? "yes" : "no",
+        GameState->Get<float>(SafeZonesStartTimeOffset), UGameplayStatics::GetTimeSeconds(GetWorld()));
+}
+
+// Lategame zone together with the aircraft (game thread): spawns it and moves it to its lategame phase the same way
+// the game does when the aircraft phase ends (extra.cpp SetZoneToIndexHook: phase 3, then skipped shrinks to 4 and 5),
+// so the circle is on the map while the players are still in the aircraft. The game's own zone start at the end of
+// the aircraft phase is then ignored once (HyperFN::ZoneLockUntil), or the zone would move on a phase.
+static void HyperFNSpawnLateZone(AFortGameModeAthena* GameMode, AFortGameStateAthena* GameState)
+{
+    HyperFNLogZone(GameMode, GameState, "before the aircraft");
+
+    if (!HyperFNSpawnInitialSafeZoneOriginal || !Addresses::SetZoneToIndex)
         return;
 
     HyperFNSpawnInitialSafeZoneHook(GameMode);
-    LOG_INFO(LogDev, "[HyperFN] Lategame: zone spawned with the aircraft: {}", GameMode->GetSafeZoneIndicator() ? "yes" : "no");
+
+    if (!GameMode->GetSafeZoneIndicator())
+    {
+        LOG_WARN(LogDev, "[HyperFN] Lategame: no zone with the aircraft; it starts when the aircraft phase ends");
+        return;
+    }
+
+    HyperFN::ZoneForcing = true;
+
+    for (int i = 0; i < 3; i++)
+        SetZoneToIndexHook(GameMode, -1);
+
+    HyperFN::ZoneForcing = false;
+    HyperFN::ZoneLockUntil = ~0ull;
+
+    HyperFNLogZone(GameMode, GameState, "with the aircraft");
 }
 
 void HyperFNForceAircraftJump(AFortPlayerControllerAthena* PlayerController); // FortPlayerController.cpp
@@ -148,6 +183,7 @@ static int HyperFNLateStage = 0;
 static ULONGLONG HyperFNLateJumpAt = 0;
 static ULONGLONG HyperFNLateSkipAt = 0;
 static bool HyperFNLateFinished = false;
+static ULONGLONG HyperFNLateZoneLogAt = 0;
 
 static void HyperFNForEachController(const std::function<void(AFortPlayerControllerAthena*)>& Fn)
 {
@@ -206,11 +242,27 @@ static void HyperFNLateTick(AFortGameModeAthena* GameMode, AFortGameStateAthena*
         HyperFNLateFinished = true;
         HyperFNForEachController([](AFortPlayerControllerAthena* Controller) { HyperFNGiveLateLoadout(Controller); });
 
-        // What LateGameThread did after the aircraft: start the zone at once (only matters when it is not up yet).
-        static auto SafeZonesStartTimeOffset = GameState->GetOffset("SafeZonesStartTime");
-        GameState->Get<float>(SafeZonesStartTimeOffset) = 0.001f;
+        // The game's zone start for the end of the aircraft phase may still come in the next seconds; after that the
+        // zone runs on its own.
+        if (HyperFN::ZoneLockUntil.load() == ~0ull)
+            HyperFN::ZoneLockUntil = Now + 5000;
 
-        LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft phase over | zone {}", GameMode->GetSafeZoneIndicator() ? "up" : "starting now");
+        // What LateGameThread did after the aircraft: start the zone at once. Only when it is not up yet: with the zone
+        // up, the game would keep asking for SpawnInitialSafeZone every frame.
+        if (!GameMode->GetSafeZoneIndicator())
+        {
+            static auto SafeZonesStartTimeOffset = GameState->GetOffset("SafeZonesStartTime");
+            GameState->Get<float>(SafeZonesStartTimeOffset) = 0.001f;
+        }
+
+        HyperFNLogZone(GameMode, GameState, "when the aircraft phase ended");
+        HyperFNLateZoneLogAt = Now + 5000;
+    }
+
+    if (HyperFNLateZoneLogAt && Now >= HyperFNLateZoneLogAt)
+    {
+        HyperFNLateZoneLogAt = 0;
+        HyperFNLogZone(GameMode, GameState, "5 s after the aircraft");
     }
 }
 
@@ -240,7 +292,7 @@ static void HyperFNStartBus(const char* Reason)
     // (HyperFNLateTick keeps trying if the aircraft does not exist yet).
     if (Globals::bLateGame.load())
     {
-        HyperFNSpawnLateZone(GameMode);
+        HyperFNSpawnLateZone(GameMode, GameState);
         HyperFNLateStage = 1;
         HyperFNLateTick(GameMode, GameState);
     }

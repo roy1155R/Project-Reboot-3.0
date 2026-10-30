@@ -584,7 +584,32 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds)
 	// HyperFN: the lategame zone (extra.cpp SetZoneToIndexHook) jumps straight to phase 5, so the safe circle the players
 	// end up in is SafeZoneLocations[5] inside the phase 4 ring. The aircraft is aimed at that spot, not at [3].
 	const int LateZoneIndex = (std::min)(5, SafeZoneLocations.Num() - 1);
-	const FVector ZoneCenterLocation = SafeZoneLocations.at(LateZoneIndex);
+	FVector ZoneCenterLocation = SafeZoneLocations.at(LateZoneIndex);
+
+	// When the zone is already up (HyperFNSpawnLateZone puts it at its lategame phase with the aircraft), its next circle
+	// is exactly the one the players will be in: aim at its centre and cross it from edge to edge.
+	float HalfLength = 15000.f;
+	const char* AimSource = "zone list";
+
+	if (auto Indicator = GameMode->GetSafeZoneIndicator())
+	{
+		static auto NextCenterOffset = Indicator->GetOffset("NextCenter", false);
+		static auto NextRadiusOffset = Indicator->GetOffset("NextRadius", false);
+
+		if (NextCenterOffset != -1 && NextRadiusOffset != -1)
+		{
+			const float Radius = Indicator->Get<float>(NextRadiusOffset);
+			const FVector Center = Indicator->Get<FVector>(NextCenterOffset);
+
+			if (Radius > 1000.f && Radius < 100000.f)
+			{
+				ZoneCenterLocation.X = Center.X;
+				ZoneCenterLocation.Y = Center.Y;
+				HalfLength = (std::min)((std::max)(Radius, 8000.f), 30000.f);
+				AimSource = "zone circle";
+			}
+		}
+	}
 
 	auto Aircrafts = GetAircrafts();
 
@@ -593,10 +618,10 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds)
 	static auto FlightInfoOffset = Aircrafts.at(0)->GetOffset("FlightInfo", false);
 	static auto FlightSpeedOffset = Aircrafts.at(0)->GetOffset("FlightSpeed", false);
 
-	// The phase 5 circle is about 140 m across its radius, so the aircraft covers 300 m through its centre in 18 s.
-	const float HalfLength = 15000.f;
-	const float CrossSeconds = 18.f;
-	const float FlightSpeed = HalfLength * 2.f / CrossSeconds;
+	// The normal bus speed (7500) crossed the lategame circle (radius about 140 m) in a few seconds; this one takes about
+	// 17 s for it.
+	const float FlightSpeed = 1700.f;
+	const float CrossSeconds = HalfLength * 2.f / FlightSpeed;
 
 	// Like Erbium's lategame (StartAircraftPhase hook): the flight is restarted from now, with the drop window open from
 	// the first second and ending when the aircraft leaves the zone. These fields are written on the game thread only;
@@ -677,8 +702,8 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds)
 	}
 
 	OutCrossSeconds = CrossSeconds;
-	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses zone {} at ({}, {}) | heading {} | speed {} | {} s across | fields drop {}/{} flight {}/{} info {}/{}",
-		LateZoneIndex, (int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds,
+	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses the {} at ({}, {}) radius {} | heading {} | speed {} | {} s across | fields drop {}/{} flight {}/{} info {}/{}",
+		AimSource, (int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)HalfLength, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds,
 		Aircrafts.at(0)->GetOffset("DropStartTime", false) != -1, Aircrafts.at(0)->GetOffset("DropEndTime", false) != -1,
 		Aircrafts.at(0)->GetOffset("FlightStartTime", false) != -1, Aircrafts.at(0)->GetOffset("FlightEndTime", false) != -1,
 		TimeTillDropEndOffset != -1, TimeTillFlightEndOffset != -1);

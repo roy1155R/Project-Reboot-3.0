@@ -20,6 +20,14 @@ void SetZoneToIndexHook(AFortGameModeAthena* GameModeAthena, int OverridePhaseMa
 
 	static int NewLateGameSafeZonePhase = 2;
 
+	// HyperFN: the lategame zone was already put at its phase when the aircraft started (dllmain HyperFNSpawnLateZone);
+	// the game's own call when the aircraft phase ends would move it on one phase more.
+	if (!HyperFN::ZoneForcing.load() && GetTickCount64() < HyperFN::ZoneLockUntil.load())
+	{
+		LOG_INFO(LogDev, "[HyperFN] Lategame: zone already at phase {}, ignoring the game's zone start", GameModeAthena->Get<int>(GameMode_SafeZonePhaseOffset));
+		return;
+	}
+
 	LOG_INFO(LogDev, "NewLateGameSafeZonePhase: {}", NewLateGameSafeZonePhase);
 
 	if (Fortnite_Version < 13)

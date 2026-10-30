@@ -25,6 +25,13 @@ namespace HyperFN
 	// Bus start asked for off the game thread (1 = admin panel / GUI button); HyperFNBusGameTick starts it on the game thread.
 	extern inline std::atomic<int> StartBusRequest{ 0 };
 
+	// Lategame: the zone is put at its lategame phase when the aircraft starts. Until GetTickCount64() passes this, the
+	// game's own "start the zone" call (made when the aircraft phase ends) is ignored so the zone does not move on a phase.
+	extern inline std::atomic<unsigned long long> ZoneLockUntil{ 0 };
+
+	// Set while HyperFN itself advances the zone, so ZoneLockUntil does not stop it.
+	extern inline std::atomic<bool> ZoneForcing{ false };
+
 	inline std::string Trim(const std::string& s)
 	{
 		auto b = s.find_first_not_of(" \t\r\n");
