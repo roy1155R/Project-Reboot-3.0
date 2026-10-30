@@ -600,29 +600,31 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 
 	const float HalfLength = (std::min)((std::max)(FlightSpeed * 12.f, 12000.f), 40000.f); // about 24 s across
 	const float CrossSeconds = HalfLength * 2.f / FlightSpeed;
-	const float Yaw = (float)(rand() % 360);
-	const float YawRad = Yaw * 3.14159265f / 180.f;
+
+	// Only the fields Reboot itself writes are touched (start location, speed, door time): writing the rotation and the
+	// drop-end fields crashed the server. So the aircraft keeps its own heading, and the start point is put on the zone's
+	// near edge along that heading; it then flies through the zone centre to the far edge.
+	FVector Heading = Aircrafts.at(0)->GetActorForwardVector();
+	Heading.Z = 0;
+	float HeadingLength = sqrtf(Heading.X * Heading.X + Heading.Y * Heading.Y);
+
+	if (HeadingLength < 0.01f)
+	{
+		Heading.X = 1; Heading.Y = 0;
+		HeadingLength = 1;
+	}
 
 	FVector LocationToStartAircraft = ZoneCenterLocation;
-	LocationToStartAircraft.X -= cosf(YawRad) * HalfLength;
-	LocationToStartAircraft.Y -= sinf(YawRad) * HalfLength;
+	LocationToStartAircraft.X -= Heading.X / HeadingLength * HalfLength;
+	LocationToStartAircraft.Y -= Heading.Y / HeadingLength * HalfLength;
 	LocationToStartAircraft.Z += 10000;
 
-	FRotator FlightRotation{};
-	FlightRotation.Yaw = Yaw;
-
-	const float Now = GameState->GetServerWorldTimeSeconds();
-	const float DropStartTime = Now;
-	const float DropEndTime = Now + CrossSeconds;
-
-	static auto InfoRotationOffset = FindOffsetStruct("/Script/FortniteGame.AircraftFlightInfo", "FlightStartRotation", false);
-	static auto InfoDropEndOffset = FindOffsetStruct("/Script/FortniteGame.AircraftFlightInfo", "TimeTillDropEnd", false);
-	static auto InfoFlightEndOffset = FindOffsetStruct("/Script/FortniteGame.AircraftFlightInfo", "TimeTillFlightEnd", false);
+	const float DropStartTime = GameState->GetServerWorldTimeSeconds();
 
 	for (int i = 0; i < Aircrafts.size(); ++i)
 	{
 		auto CurrentAircraft = Aircrafts.at(i);
-		CurrentAircraft->TeleportTo(LocationToStartAircraft, FlightRotation);
+		CurrentAircraft->TeleportTo(LocationToStartAircraft, CurrentAircraft->GetActorRotation());
 
 		if (FlightInfoOffset == -1)
 		{
@@ -640,29 +642,13 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 			FlightInfo->GetFlightSpeed() = FlightSpeed;
 			FlightInfo->GetFlightStartLocation() = LocationToStartAircraft;
 			FlightInfo->GetTimeTillDropStart() = DropStartTime;
-
-			if (InfoRotationOffset != -1)
-				*(FRotator*)(__int64(FlightInfo) + InfoRotationOffset) = FlightRotation;
-			if (InfoDropEndOffset != -1)
-				*(float*)(__int64(FlightInfo) + InfoDropEndOffset) = DropEndTime;
-			if (InfoFlightEndOffset != -1)
-				*(float*)(__int64(FlightInfo) + InfoFlightEndOffset) = DropEndTime + 10.f;
 		}
-
-		// The aircraft's own drop window, where the build has one.
-		static auto AircraftDropStartOffset = CurrentAircraft->GetOffset("DropStartTime", false);
-		static auto AircraftDropEndOffset = CurrentAircraft->GetOffset("DropEndTime", false);
-
-		if (AircraftDropStartOffset != -1)
-			CurrentAircraft->Get<float>(AircraftDropStartOffset) = DropStartTime;
-		if (AircraftDropEndOffset != -1)
-			CurrentAircraft->Get<float>(AircraftDropEndOffset) = DropEndTime;
 
 		CurrentAircraft->ForceNetUpdate();
 	}
 
 	HyperFN::LateDropAt = GetTickCount64() + (unsigned long long)((CrossSeconds + 1.f) * 1000.f);
-	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses the zone at yaw {} | speed {} | {} s across", (int)Yaw, (int)FlightSpeed, (int)CrossSeconds);
+	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses the zone | speed {} | {} s across", (int)FlightSpeed, (int)CrossSeconds);
 
 	while (GameState->GetGamePhase() != EAthenaGamePhase::Aircraft)
 	{
