@@ -1291,6 +1291,8 @@ void HyperFNDropEveryone(AFortGameStateAthena* GameState)
 	LOG_INFO(LogDev, "[HyperFN] Lategame: dropped everyone left in the aircraft, re-sent {} pawns", Resent);
 }
 
+void HyperFNBusGameTick(); // dllmain.cpp
+
 // HyperFN: called from UNetDriver::TickFlushHook, i.e. on the game thread, twice a second.
 //  - two players in and no countdown yet (a join that slipped past HandleStartingNewPlayer): start it
 //  - the lategame aircraft has crossed the zone: drop whoever is still on board
@@ -1315,6 +1317,8 @@ void HyperFNGameTick()
 	if (Globals::bAutoRestart && !bStartedBus && !HyperFN::BusDeadline.load() && World->GetNetDriver()
 		&& GameState->GetGamePhase() == EAthenaGamePhase::Warmup && World->GetNetDriver()->GetClientConnections().Num() >= NumRequiredPlayersToStart)
 		HyperFNStartCountdown(GameMode, AutoBusStartSeconds);
+
+	HyperFNBusGameTick();
 
 	auto DropAt = HyperFN::LateDropAt.load();
 

@@ -526,10 +526,10 @@ static inline void PlayerTabs()
 	}
 }
 
-static inline DWORD WINAPI LateGameThread(LPVOID)
+// HyperFN: places the lategame aircraft. Game thread only (HyperFNBusGameTick in dllmain): moving the aircraft from a
+// side thread while the game ticks it crashed the server. Returns false while the aircraft does not exist yet.
+static inline bool HyperFNLateSetupAircraft()
 {
-	float MaxTickRate = 30;
-
 	auto GameMode = Cast<AFortGameModeAthena>(GetWorld()->GetGameMode());
 	auto GameState = Cast<AFortGameStateAthena>(GameMode->GetGameState());
 
@@ -565,12 +565,8 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 		return Aircrafts;
 	};
 
-	GameMode->StartAircraftPhase();
-
-	while (GetAircrafts().size() <= 0)
-	{
-		Sleep(1000 / MaxTickRate);
-	}
+	if (GetAircrafts().size() <= 0)
+		return false;
 
 	static auto SafeZoneLocationsOffset = GameMode->GetOffset("SafeZoneLocations");
 	const TArray<FVector>& SafeZoneLocations = GameMode->Get<TArray<FVector>>(SafeZoneLocationsOffset);
@@ -579,7 +575,7 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 	{
 		LOG_WARN(LogLateGame, "Unable to find SafeZoneLocation! Disabling lategame..");
 		SetIsLategame(false);
-		return 0;
+		return true;
 	}
 
 	// HyperFN: the lategame zone (extra.cpp SetZoneToIndexHook) jumps straight to phase 5, so the safe circle the players
@@ -656,6 +652,18 @@ static inline DWORD WINAPI LateGameThread(LPVOID)
 
 	HyperFN::LateDropAt = GetTickCount64() + (unsigned long long)((CrossSeconds + 1.f) * 1000.f);
 	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses zone {} at ({}, {}) | heading {} | speed {} | {} s across", LateZoneIndex, (int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds);
+
+	return true;
+}
+
+// Lategame loadout: once everyone has left the aircraft, hands out the materials and weapons. The aircraft itself is
+// started and placed on the game thread (HyperFNBusGameTick / HyperFNLateSetupAircraft).
+static inline DWORD WINAPI LateGameThread(LPVOID)
+{
+	float MaxTickRate = 30;
+
+	auto GameMode = Cast<AFortGameModeAthena>(GetWorld()->GetGameMode());
+	auto GameState = Cast<AFortGameStateAthena>(GameMode->GetGameState());
 
 	while (GameState->GetGamePhase() != EAthenaGamePhase::Aircraft)
 	{
@@ -865,21 +873,8 @@ static inline void MainUI()
 					{
 						if (ImGui::Button("Start Bus"))
 						{
-							bStartedBus = true;
-
-							auto GameMode = (AFortGameModeAthena*)GetWorld()->GetGameMode();
-							auto GameState = Cast<AFortGameStateAthena>(GameMode->GetGameState());
-
-							AmountOfPlayersWhenBusStart = GameState->GetPlayersLeft();
-
-							if (Globals::bLateGame.load())
-							{
-								CreateThread(0, 0, LateGameThread, 0, 0, 0);
-							}
-							else
-							{
-								GameMode->StartAircraftPhase();
-							}
+							// HyperFN: started on the game thread by HyperFNBusGameTick (dllmain).
+							HyperFN::StartBusRequest = 1;
 						}
 					}
 					else

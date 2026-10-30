@@ -63,6 +63,7 @@ static void HyperFNLoadBusSettings()
 }
 
 // What the "Start Bus" button does on chapter 2 and later, where the warmup countdown alone never starts the aircraft.
+// Game thread only (HyperFNBusGameTick).
 static void HyperFNStartBus(const char* Reason)
 {
     if (bStartedBus)
@@ -81,11 +82,34 @@ static void HyperFNStartBus(const char* Reason)
 
     LOG_INFO(LogDev, "[HyperFN] Starting bus ({}){}", Reason, Globals::bLateGame.load() ? " | lategame" : "");
 
-    // Like the GUI: lategame moves the aircraft over the last zone and hands out the loadout once everyone dropped.
+    GameMode->StartAircraftPhase();
+
+    // Lategame: HyperFNBusGameTick places the aircraft over the zone as soon as it exists, and LateGameThread hands out
+    // the loadout once everyone dropped.
     if (Globals::bLateGame.load())
+    {
+        HyperFN::LateAircraftPending = true;
         CreateThread(0, 0, LateGameThread, 0, 0, 0);
-    else
-        GameMode->StartAircraftPhase();
+    }
+}
+
+// Called from HyperFNGameTick (FortGameModeAthena.cpp), i.e. on the game thread: starts the bus when the countdown ends
+// or the panel asks for it, and places the lategame aircraft.
+void HyperFNBusGameTick()
+{
+    if (HyperFN::StartBusRequest.exchange(0))
+        HyperFNStartBus("admin panel");
+
+    auto Deadline = HyperFN::BusDeadline.load();
+
+    if (Deadline && GetTickCount64() >= Deadline)
+    {
+        HyperFN::BusDeadline = 0;
+        HyperFNStartBus("countdown ended");
+    }
+
+    if (HyperFN::LateAircraftPending.load() && HyperFNLateSetupAircraft())
+        HyperFN::LateAircraftPending = false;
 }
 
 void HyperFNTickReapply(); // FortPlayerController.cpp
@@ -102,15 +126,7 @@ static DWORD WINAPI HyperFNThread(LPVOID)
             continue;
 
         if (HyperFN::TakeCommand("startbus"))
-            HyperFNStartBus("admin panel");
-
-        auto Deadline = HyperFN::BusDeadline.load();
-
-        if (Deadline && GetTickCount64() >= Deadline)
-        {
-            HyperFN::BusDeadline = 0;
-            HyperFNStartBus("countdown ended");
-        }
+            HyperFN::StartBusRequest = 1;
     }
 
     return 0;
