@@ -298,7 +298,7 @@ void AFortGameModeAthena::OnAircraftEnteredDropZoneHook(AFortGameModeAthena* Gam
 	OnAircraftEnteredDropZoneOriginal(GameModeAthena, Aircraft);
 
 	// HyperFN: in lategame the door opens as the aircraft starts crossing the zone, so nobody is dropped here; players
-	// jump when they like and HyperFNGameTick drops whoever is left once it has crossed (HyperFN::LateDropAt).
+	// jump when they like and HyperFNLateTick (dllmain) drops whoever is left once it has crossed.
 }
 
 void SetupEverythingAI() // find better name lol
@@ -1265,37 +1265,11 @@ void HyperFNStartCountdown(AFortGameModeAthena* GameMode, float Duration)
 	HyperFN::BusDeadline = GetTickCount64() + (unsigned long long)(Duration * 1000);
 }
 
-// HyperFN: drops everyone still in the aircraft and tells every client about its pawn once more (a client sometimes
-// misses the possession and stays in the bus view). Game thread only.
-void HyperFNDropEveryone(AFortGameStateAthena* GameState)
-{
-	GameState->SkipAircraft();
-
-	static auto ClientRestartFn = FindObject<UFunction>(L"/Script/Engine.PlayerController.ClientRestart");
-	auto AllControllers = UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFortPlayerControllerAthena::StaticClass());
-	int Resent = 0;
-
-	for (int i = 0; ClientRestartFn && i < AllControllers.Num(); i++)
-	{
-		auto Controller = (AFortPlayerControllerAthena*)AllControllers.at(i);
-		APawn* Pawn = Controller ? Controller->GetMyFortPawn() : nullptr;
-
-		if (!Pawn)
-			continue;
-
-		Controller->ProcessEvent(ClientRestartFn, &Pawn);
-		Resent++;
-	}
-
-	AllControllers.Free();
-	LOG_INFO(LogDev, "[HyperFN] Lategame: dropped everyone left in the aircraft, re-sent {} pawns", Resent);
-}
-
 void HyperFNBusGameTick(); // dllmain.cpp
 
 // HyperFN: called from UNetDriver::TickFlushHook, i.e. on the game thread, twice a second.
 //  - two players in and no countdown yet (a join that slipped past HandleStartingNewPlayer): start it
-//  - the lategame aircraft has crossed the zone: drop whoever is still on board
+//  - the bus start and the lategame flight (HyperFNBusGameTick)
 void HyperFNGameTick()
 {
 	static ULONGLONG Next = 0;
@@ -1319,16 +1293,6 @@ void HyperFNGameTick()
 		HyperFNStartCountdown(GameMode, AutoBusStartSeconds);
 
 	HyperFNBusGameTick();
-
-	auto DropAt = HyperFN::LateDropAt.load();
-
-	if (DropAt && Now >= DropAt)
-	{
-		HyperFN::LateDropAt = 0;
-
-		if (GameState->GetGamePhase() == EAthenaGamePhase::Aircraft)
-			HyperFNDropEveryone(GameState);
-	}
 }
 
 void AFortGameModeAthena::Athena_HandleStartingNewPlayerHook(AFortGameModeAthena* GameMode, AActor* NewPlayerActor)

@@ -22,14 +22,8 @@ namespace HyperFN
 	// GetTickCount64() time at which the bus auto timer ends (0 = no countdown running).
 	extern inline std::atomic<unsigned long long> BusDeadline{ 0 };
 
-	// GetTickCount64() time at which the lategame aircraft has crossed the zone and everyone left is dropped (0 = none).
-	extern inline std::atomic<unsigned long long> LateDropAt{ 0 };
-
 	// Bus start asked for off the game thread (1 = admin panel / GUI button); HyperFNBusGameTick starts it on the game thread.
 	extern inline std::atomic<int> StartBusRequest{ 0 };
-
-	// The lategame aircraft phase has started and the aircraft still has to be placed over the zone.
-	extern inline std::atomic<bool> LateAircraftPending{ false };
 
 	inline std::string Trim(const std::string& s)
 	{

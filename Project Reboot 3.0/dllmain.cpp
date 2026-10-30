@@ -12,6 +12,7 @@
 #include "globals.h"
 #include "FortInventoryInterface.h"
 #include <fstream>
+#include <functional>
 #include "GenericPlatformTime.h"
 #include "FortAthenaMutator_GiveItemsAtGamePhaseStep.h"
 #include "FortGameStateAthena.h"
@@ -62,6 +63,157 @@ static void HyperFNLoadBusSettings()
         AutoBusStartSeconds = (std::max)(1.f, (float)std::atof(Settings["busdelay"].c_str()));
 }
 
+// HyperFN: AFortGameModeAthena::SpawnInitialSafeZone, found by its log string like Erbium does; the start of the
+// function comes from the unwind table rather than a byte pattern. Lategame spawns the zone together with the aircraft
+// so the players see it from the bus; the hook keeps the game from spawning a second zone after the aircraft phase.
+static void (*HyperFNSpawnInitialSafeZoneOriginal)(AFortGameModeAthena* GameMode) = nullptr;
+
+static void HyperFNSpawnInitialSafeZoneHook(AFortGameModeAthena* GameMode)
+{
+    if (GameMode && GameMode->GetSafeZoneIndicator())
+    {
+        LOG_INFO(LogDev, "[HyperFN] SpawnInitialSafeZone: the zone is already up, skipping");
+        return;
+    }
+
+    LOG_INFO(LogDev, "[HyperFN] SpawnInitialSafeZone");
+    HyperFNSpawnInitialSafeZoneOriginal(GameMode);
+}
+
+static uint64 HyperFNFindSpawnInitialSafeZone()
+{
+    auto Ref = Memcury::Scanner::FindStringRef(L"FortGameModeAthena::SpawnInitialSafeZone bShouldSpawnSafeZoneIndicator == false, skipping spawning Safe Zone Indicator", false, 0, Engine_Version >= 427).Get();
+
+    if (!Ref)
+        return 0;
+
+    DWORD64 ImageBase = 0;
+    auto Entry = RtlLookupFunctionEntry(Ref, &ImageBase, nullptr);
+
+    // A function split into parts has chained unwind entries; the first part is where the function starts.
+    for (int i = 0; Entry && i < 32; i++)
+    {
+        auto Unwind = (uint8_t*)(ImageBase + Entry->UnwindData);
+
+        if (!((Unwind[0] >> 3) & 4)) // UNW_FLAG_CHAININFO
+            break;
+
+        Entry = (PRUNTIME_FUNCTION)(Unwind + 4 + ((Unwind[2] + 1) & ~1) * 2);
+    }
+
+    if (!Entry)
+        return 0;
+
+    uint64 Start = ImageBase + Entry->BeginAddress;
+    return Ref >= Start && Ref - Start < 0x8000 ? Start : 0;
+}
+
+static void HyperFNHookSpawnInitialSafeZone()
+{
+    auto Addr = HyperFNFindSpawnInitialSafeZone();
+    auto Base = __int64(GetModuleHandleW(0));
+
+    if (!Addr)
+    {
+        LOG_WARN(LogDev, "[HyperFN] SpawnInitialSafeZone not found; the lategame zone will appear after the aircraft");
+        return;
+    }
+
+    auto Bytes = (uint8_t*)Addr;
+    LOG_INFO(LogDev, "[HyperFN] SpawnInitialSafeZone: 0x{:x} ({:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x})", Addr - Base,
+        Bytes[0], Bytes[1], Bytes[2], Bytes[3], Bytes[4], Bytes[5], Bytes[6], Bytes[7]);
+
+    Hooking::MinHook::Hook((PVOID)Addr, (PVOID)HyperFNSpawnInitialSafeZoneHook, (PVOID*)&HyperFNSpawnInitialSafeZoneOriginal);
+}
+
+// Lategame zone together with the aircraft (game thread).
+static void HyperFNSpawnLateZone(AFortGameModeAthena* GameMode)
+{
+    if (!HyperFNSpawnInitialSafeZoneOriginal)
+        return;
+
+    HyperFNSpawnInitialSafeZoneHook(GameMode);
+    LOG_INFO(LogDev, "[HyperFN] Lategame: zone spawned with the aircraft: {}", GameMode->GetSafeZoneIndicator() ? "yes" : "no");
+}
+
+void HyperFNForceAircraftJump(AFortPlayerControllerAthena* PlayerController); // FortPlayerController.cpp
+void HyperFNGiveLateLoadout(AFortPlayerControllerAthena* PlayerController); // FortPlayerController.cpp
+
+// HyperFN lategame flight, game thread only:
+//  1  the aircraft phase has started: put the aircraft on the near edge of the zone (until the aircraft exists)
+//  2  it crosses the zone with the door open; just before the far edge everyone still on board jumps like a player would
+//  3  everyone is out; if the game still has not ended the aircraft phase a few seconds later, it is ended here
+//  4  done. Once the aircraft phase is over, anyone who did not get the loadout gets it and the zone is made to start.
+static int HyperFNLateStage = 0;
+static ULONGLONG HyperFNLateJumpAt = 0;
+static ULONGLONG HyperFNLateSkipAt = 0;
+static bool HyperFNLateFinished = false;
+
+static void HyperFNForEachController(const std::function<void(AFortPlayerControllerAthena*)>& Fn)
+{
+    auto AllControllers = UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFortPlayerControllerAthena::StaticClass());
+
+    for (int i = 0; i < AllControllers.Num(); i++)
+    {
+        if (auto Controller = (AFortPlayerControllerAthena*)AllControllers.at(i))
+            Fn(Controller);
+    }
+
+    AllControllers.Free();
+}
+
+static void HyperFNLateTick(AFortGameModeAthena* GameMode, AFortGameStateAthena* GameState)
+{
+    auto Now = GetTickCount64();
+
+    if (HyperFNLateStage == 1)
+    {
+        float CrossSeconds = 0.f;
+
+        if (!HyperFNLateSetupAircraft(CrossSeconds))
+            return;
+
+        if (CrossSeconds <= 0.f)
+        {
+            HyperFNLateStage = 4;
+            return;
+        }
+
+        HyperFNLateJumpAt = Now + (ULONGLONG)((CrossSeconds - 0.5f) * 1000.f);
+        HyperFNLateStage = 2;
+    }
+
+    if (HyperFNLateStage == 2 && Now >= HyperFNLateJumpAt)
+    {
+        HyperFNForEachController([](AFortPlayerControllerAthena* Controller) { HyperFNForceAircraftJump(Controller); });
+        HyperFNLateSkipAt = Now + 3000;
+        HyperFNLateStage = 3;
+    }
+
+    if (HyperFNLateStage == 3 && Now >= HyperFNLateSkipAt)
+    {
+        HyperFNLateStage = 4;
+
+        if (GameState->GetGamePhase() == EAthenaGamePhase::Aircraft)
+        {
+            LOG_INFO(LogDev, "[HyperFN] Lategame: everyone is out, ending the aircraft phase");
+            GameState->SkipAircraft();
+        }
+    }
+
+    if (HyperFNLateStage >= 2 && !HyperFNLateFinished && GameState->GetGamePhase() != EAthenaGamePhase::Aircraft)
+    {
+        HyperFNLateFinished = true;
+        HyperFNForEachController([](AFortPlayerControllerAthena* Controller) { HyperFNGiveLateLoadout(Controller); });
+
+        // What LateGameThread did after the aircraft: start the zone at once (only matters when it is not up yet).
+        static auto SafeZonesStartTimeOffset = GameState->GetOffset("SafeZonesStartTime");
+        GameState->Get<float>(SafeZonesStartTimeOffset) = 0.001f;
+
+        LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft phase over | zone {}", GameMode->GetSafeZoneIndicator() ? "up" : "starting now");
+    }
+}
+
 // What the "Start Bus" button does on chapter 2 and later, where the warmup countdown alone never starts the aircraft.
 // Game thread only (HyperFNBusGameTick).
 static void HyperFNStartBus(const char* Reason)
@@ -84,17 +236,20 @@ static void HyperFNStartBus(const char* Reason)
 
     GameMode->StartAircraftPhase();
 
-    // Lategame: HyperFNBusGameTick places the aircraft over the zone as soon as it exists, and LateGameThread hands out
-    // the loadout once everyone dropped.
+    // Lategame: the zone goes up with the aircraft and the aircraft is put over it right away, in this same frame
+    // (HyperFNLateTick keeps trying if the aircraft does not exist yet).
     if (Globals::bLateGame.load())
     {
-        HyperFN::LateAircraftPending = true;
-        CreateThread(0, 0, LateGameThread, 0, 0, 0);
+        HyperFNSpawnLateZone(GameMode);
+        HyperFNLateStage = 1;
+        HyperFNLateTick(GameMode, GameState);
     }
 }
 
-// Called from HyperFNGameTick (FortGameModeAthena.cpp), i.e. on the game thread: starts the bus when the countdown ends
-// or the panel asks for it, and places the lategame aircraft.
+void HyperFNTickReapply(); // FortPlayerController.cpp
+
+// Called from HyperFNGameTick (FortGameModeAthena.cpp), i.e. on the game thread, twice a second: starts the bus when
+// the countdown ends or the panel asks for it, runs the lategame flight and re-applies lockers.
 void HyperFNBusGameTick()
 {
     if (HyperFN::StartBusRequest.exchange(0))
@@ -108,11 +263,17 @@ void HyperFNBusGameTick()
         HyperFNStartBus("countdown ended");
     }
 
-    if (HyperFN::LateAircraftPending.load() && HyperFNLateSetupAircraft())
-        HyperFN::LateAircraftPending = false;
-}
+    if (HyperFNLateStage)
+    {
+        auto GameMode = (AFortGameModeAthena*)GetWorld()->GetGameMode();
+        auto GameState = GameMode ? Cast<AFortGameStateAthena>(GameMode->GetGameState()) : nullptr;
 
-void HyperFNTickReapply(); // FortPlayerController.cpp
+        if (GameState)
+            HyperFNLateTick(GameMode, GameState);
+    }
+
+    HyperFNTickReapply();
+}
 
 static DWORD WINAPI HyperFNThread(LPVOID)
 {
@@ -120,7 +281,6 @@ static DWORD WINAPI HyperFNThread(LPVOID)
     {
         Sleep(1000);
         HyperFNLoadBusSettings();
-        HyperFNTickReapply();
 
         if (!Globals::bStartedListening)
             continue;
@@ -1887,6 +2047,7 @@ DWORD WINAPI Main(LPVOID)
    
     // if (Fortnite_Version >= 13)
     Hooking::MinHook::Hook((PVOID)Addresses::SetZoneToIndex, (PVOID)SetZoneToIndexHook, (PVOID*)&SetZoneToIndexOriginal);
+    HyperFNHookSpawnInitialSafeZone();
     Hooking::MinHook::Hook((PVOID)Addresses::EnterAircraft, (PVOID)AFortPlayerControllerAthena::EnterAircraftHook, (PVOID*)&AFortPlayerControllerAthena::EnterAircraftOriginal);
 
     AddVehicleHook();

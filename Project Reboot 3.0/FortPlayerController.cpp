@@ -1,4 +1,4 @@
-#include "FortPlayerController.h"
+﻿#include "FortPlayerController.h"
 
 #include "Rotator.h"
 #include "BuildingSMActor.h"
@@ -25,6 +25,7 @@
 #include "FortAthenaMutator_InventoryOverride.h"
 #include "FortAthenaMutator_TDM.h"
 #include <mutex>
+#include <unordered_set>
 
 void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPawn* PawnAsFort, AFortPlayerState* PlayerStateAsFort); // FortPlayerControllerAthena.cpp
 
@@ -35,7 +36,7 @@ static void HyperFNApplyLoadout(AFortPlayerController* Controller)
 }
 
 // A slow client can still be loading the warmup island when its loading screen drops and keep the default skin;
-// apply the locker once more a few seconds later (ticked from HyperFNThread in dllmain.cpp).
+// apply the locker once more a few seconds later (ticked from HyperFNBusGameTick in dllmain.cpp, on the game thread).
 static std::mutex HyperFNReapplyLock;
 static std::vector<std::pair<AFortPlayerController*, ULONGLONG>> HyperFNReapplyQueue;
 
@@ -809,6 +810,61 @@ void AFortPlayerController::ServerAttemptInteractHook(UObject* Context, FFrame* 
 	return ServerAttemptInteractOriginal(Context, Stack);
 }
 
+// HyperFN: the lategame loadout (materials, three weapons, shields and ammo), given once to each player as they leave
+// the aircraft. Game thread only; it used to be handed out by LateGameThread from a side thread after the bus.
+void HyperFNGiveLateLoadout(AFortPlayerControllerAthena* PlayerController)
+{
+	static std::unordered_set<AFortPlayerControllerAthena*> Given;
+
+	if (!Globals::bLateGame.load() || !PlayerController || Given.count(PlayerController))
+		return;
+
+	auto WorldInventory = PlayerController->GetWorldInventory();
+
+	if (!WorldInventory)
+		return;
+
+	Given.insert(PlayerController);
+
+	static auto WoodItemData = FindObject<UFortItemDefinition>(L"/Game/Items/ResourcePickups/WoodItemData.WoodItemData");
+	static auto StoneItemData = FindObject<UFortItemDefinition>(L"/Game/Items/ResourcePickups/StoneItemData.StoneItemData");
+	static auto MetalItemData = FindObject<UFortItemDefinition>(L"/Game/Items/ResourcePickups/MetalItemData.MetalItemData");
+
+	static auto Rifle = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Assault_AutoHigh_Athena_SR_Ore_T03.WID_Assault_AutoHigh_Athena_SR_Ore_T03");
+	static auto Shotgun = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Shotgun_Standard_Athena_SR_Ore_T03.WID_Shotgun_Standard_Athena_SR_Ore_T03")
+		? FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Shotgun_Standard_Athena_SR_Ore_T03.WID_Shotgun_Standard_Athena_SR_Ore_T03")
+		: FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Shotgun_Standard_Athena_C_Ore_T03.WID_Shotgun_Standard_Athena_C_Ore_T03");
+	static auto SMG = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Pistol_AutoHeavyPDW_Athena_R_Ore_T03.WID_Pistol_AutoHeavyPDW_Athena_R_Ore_T03")
+		? FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Pistol_AutoHeavyPDW_Athena_R_Ore_T03.WID_Pistol_AutoHeavyPDW_Athena_R_Ore_T03")
+		: FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Pistol_AutoHeavySuppressed_Athena_R_Ore_T03.WID_Pistol_AutoHeavySuppressed_Athena_R_Ore_T03");
+
+	static auto MiniShields = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Consumables/ShieldSmall/Athena_ShieldSmall.Athena_ShieldSmall");
+
+	static auto Shells = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Ammo/AthenaAmmoDataShells.AthenaAmmoDataShells");
+	static auto Medium = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Ammo/AthenaAmmoDataBulletsMedium.AthenaAmmoDataBulletsMedium");
+	static auto Light = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Ammo/AthenaAmmoDataBulletsLight.AthenaAmmoDataBulletsLight");
+	static auto Heavy = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Ammo/AthenaAmmoDataBulletsHeavy.AthenaAmmoDataBulletsHeavy");
+
+	WorldInventory->AddItem(WoodItemData, nullptr, 500);
+	WorldInventory->AddItem(StoneItemData, nullptr, 500);
+	WorldInventory->AddItem(MetalItemData, nullptr, 500);
+	WorldInventory->AddItem(Rifle, nullptr, 1);
+	WorldInventory->AddItem(Shotgun, nullptr, 1);
+	WorldInventory->AddItem(SMG, nullptr, 1);
+	WorldInventory->AddItem(MiniShields, nullptr, 6);
+	WorldInventory->AddItem(Shells, nullptr, 999);
+	WorldInventory->AddItem(Medium, nullptr, 999);
+	WorldInventory->AddItem(Light, nullptr, 999);
+	WorldInventory->AddItem(Heavy, nullptr, 999);
+
+	WorldInventory->Update();
+
+	auto PlayerState = PlayerController->GetPlayerStateAthena();
+	LOG_INFO(LogDev, "[HyperFN] Lategame loadout given to {}", PlayerState ? PlayerState->GetPlayerName().ToString() : std::string("?"));
+}
+
+static bool HyperFNJumpFromAircraft(AFortPlayerControllerAthena* PlayerController);
+
 void AFortPlayerController::ServerAttemptAircraftJumpHook(AFortPlayerController* PC, FRotator ClientRotation)
 {
 	auto PlayerController = Cast<AFortPlayerControllerAthena>(Engine_Version < 424 ? PC : ((UActorComponent*)PC)->GetOwner());
@@ -842,6 +898,26 @@ void AFortPlayerController::ServerAttemptAircraftJumpHook(AFortPlayerController*
 
 	LOG_INFO(LogDev, "ServerAttemptAircraftJumpHook!");
 
+	if (!HyperFNJumpFromAircraft(PlayerController))
+		return ServerAttemptAircraftJumpOriginal(PC, ClientRotation);
+}
+
+// HyperFN: drops a player who is still in the aircraft, exactly like their own jump would (used when the lategame
+// aircraft has crossed the zone). Game thread only.
+void HyperFNForceAircraftJump(AFortPlayerControllerAthena* PlayerController)
+{
+	auto PlayerState = PlayerController ? PlayerController->GetPlayerStateAthena() : nullptr;
+
+	if (!PlayerState || !PlayerState->IsInAircraft())
+		return;
+
+	LOG_INFO(LogDev, "[HyperFN] Lategame: {} is still in the aircraft at the end of the zone, dropping them", PlayerState->GetPlayerName().ToString());
+	HyperFNJumpFromAircraft(PlayerController);
+}
+
+// HyperFN: what ServerAttemptAircraftJump does for a player; false when there is no aircraft to jump from.
+static bool HyperFNJumpFromAircraft(AFortPlayerControllerAthena* PlayerController)
+{
 	auto GameMode = (AFortGameModeAthena*)GetWorld()->GetGameMode();
 	auto GameState = GameMode->GetGameStateAthena();
 
@@ -861,7 +937,7 @@ void AFortPlayerController::ServerAttemptAircraftJumpHook(AFortPlayerController*
 	}
 
 	if (!AircraftToJumpFrom)
-		return ServerAttemptAircraftJumpOriginal(PC, ClientRotation);
+		return false;
 
 	if (false)
 	{
@@ -925,8 +1001,11 @@ void AFortPlayerController::ServerAttemptAircraftJumpHook(AFortPlayerController*
 		HyperFNApplyLoadout(PlayerController);
 	}
 
+	HyperFNGiveLateLoadout(PlayerController);
+
 	// PlayerController->ServerRestartPlayer();
 	// return ServerAttemptAircraftJumpOriginal(PC, ClientRotation);
+	return true;
 }
 
 void AFortPlayerController::ServerSuicideHook(AFortPlayerController* PlayerController)

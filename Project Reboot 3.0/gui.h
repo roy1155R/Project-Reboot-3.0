@@ -527,9 +527,12 @@ static inline void PlayerTabs()
 }
 
 // HyperFN: places the lategame aircraft. Game thread only (HyperFNBusGameTick in dllmain): moving the aircraft from a
-// side thread while the game ticks it crashed the server. Returns false while the aircraft does not exist yet.
-static inline bool HyperFNLateSetupAircraft()
+// side thread while the game ticks it crashed the server. Returns false while the aircraft does not exist yet;
+// OutCrossSeconds is 0 when lategame had to be turned off.
+static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds)
 {
+	OutCrossSeconds = 0.f;
+
 	auto GameMode = Cast<AFortGameModeAthena>(GetWorld()->GetGameMode());
 	auto GameState = Cast<AFortGameStateAthena>(GameMode->GetGameState());
 
@@ -586,20 +589,19 @@ static inline bool HyperFNLateSetupAircraft()
 	auto Aircrafts = GetAircrafts();
 
 	// HyperFN: the aircraft flies straight across the lategame zone, from one edge to the other, with the door open from
-	// the start (no countdown). Whoever is still on board when it has crossed is dropped by HyperFNGameTick on the game
-	// thread (HyperFN::LateDropAt).
+	// the start (no countdown). Whoever is still on board when it has crossed is made to jump by HyperFNBusGameTick.
 	static auto FlightInfoOffset = Aircrafts.at(0)->GetOffset("FlightInfo", false);
 	static auto FlightSpeedOffset = Aircrafts.at(0)->GetOffset("FlightSpeed", false);
 
-	// The normal bus speed (7500) crossed the zone in a few seconds, so the lategame bus flies slower: 400 m in 20 s.
-	const float HalfLength = 20000.f;
-	const float CrossSeconds = 20.f;
+	// The phase 5 circle is about 140 m across its radius, so the aircraft covers 300 m through its centre in 18 s.
+	const float HalfLength = 15000.f;
+	const float CrossSeconds = 18.f;
 	const float FlightSpeed = HalfLength * 2.f / CrossSeconds;
 
-	// Only the fields Reboot itself writes are touched (start location, speed, door time): writing the rotation and the
-	// drop-end fields crashed the server. The clients move the aircraft along the flight's own start rotation, so that
-	// rotation is read (never written) and the start point is put on the zone's near edge along it; the aircraft then
-	// flies through the zone centre to the far edge.
+	// Like Erbium's lategame (StartAircraftPhase hook): the flight is restarted from now, with the drop window open from
+	// the first second and ending when the aircraft leaves the zone. These fields are written on the game thread only;
+	// writing them from a side thread is what crashed the server before. The flight's start rotation is read (never
+	// written): the clients move the aircraft along it, so the start point is put on the zone's near edge along it.
 	float FlightYaw = Aircrafts.at(0)->GetActorRotation().Yaw;
 
 	if (FlightInfoOffset != -1)
@@ -622,7 +624,10 @@ static inline bool HyperFNLateSetupAircraft()
 	FRotator AircraftRotation{};
 	AircraftRotation.Yaw = FlightYaw;
 
-	const float DropStartTime = GameState->GetServerWorldTimeSeconds();
+	const float Now = UGameplayStatics::GetTimeSeconds(GetWorld());
+
+	static auto TimeTillDropEndOffset = FindOffsetStruct("/Script/FortniteGame.AircraftFlightInfo", "TimeTillDropEnd", false);
+	static auto TimeTillFlightEndOffset = FindOffsetStruct("/Script/FortniteGame.AircraftFlightInfo", "TimeTillFlightEnd", false);
 
 	for (int i = 0; i < Aircrafts.size(); ++i)
 	{
@@ -632,11 +637,9 @@ static inline bool HyperFNLateSetupAircraft()
 		if (FlightInfoOffset == -1)
 		{
 			static auto FlightStartLocationOffset = CurrentAircraft->GetOffset("FlightStartLocation");
-			static auto DropStartTimeOffset = CurrentAircraft->GetOffset("DropStartTime");
 
 			CurrentAircraft->Get<FVector>(FlightStartLocationOffset) = LocationToStartAircraft;
 			CurrentAircraft->Get<float>(FlightSpeedOffset) = FlightSpeed;
-			CurrentAircraft->Get<float>(DropStartTimeOffset) = DropStartTime;
 		}
 		else
 		{
@@ -644,117 +647,48 @@ static inline bool HyperFNLateSetupAircraft()
 
 			FlightInfo->GetFlightSpeed() = FlightSpeed;
 			FlightInfo->GetFlightStartLocation() = LocationToStartAircraft;
-			FlightInfo->GetTimeTillDropStart() = DropStartTime;
+			FlightInfo->GetTimeTillDropStart() = 0.f;
+
+			if (TimeTillDropEndOffset != -1)
+				*(float*)(__int64(FlightInfo) + TimeTillDropEndOffset) = CrossSeconds;
+
+			if (TimeTillFlightEndOffset != -1)
+				*(float*)(__int64(FlightInfo) + TimeTillFlightEndOffset) = CrossSeconds + 2.f;
 		}
+
+		static auto DropStartTimeOffset = CurrentAircraft->GetOffset("DropStartTime", false);
+		static auto DropEndTimeOffset = CurrentAircraft->GetOffset("DropEndTime", false);
+		static auto FlightStartTimeOffset = CurrentAircraft->GetOffset("FlightStartTime", false);
+		static auto FlightEndTimeOffset = CurrentAircraft->GetOffset("FlightEndTime", false);
+
+		if (DropStartTimeOffset != -1)
+			CurrentAircraft->Get<float>(DropStartTimeOffset) = Now;
+
+		if (DropEndTimeOffset != -1)
+			CurrentAircraft->Get<float>(DropEndTimeOffset) = Now + CrossSeconds;
+
+		if (FlightStartTimeOffset != -1)
+			CurrentAircraft->Get<float>(FlightStartTimeOffset) = Now;
+
+		if (FlightEndTimeOffset != -1)
+			CurrentAircraft->Get<float>(FlightEndTimeOffset) = Now + CrossSeconds + 2.f;
 
 		CurrentAircraft->ForceNetUpdate();
 	}
 
-	HyperFN::LateDropAt = GetTickCount64() + (unsigned long long)((CrossSeconds + 1.f) * 1000.f);
-	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses zone {} at ({}, {}) | heading {} | speed {} | {} s across", LateZoneIndex, (int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds);
+	OutCrossSeconds = CrossSeconds;
+	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft crosses zone {} at ({}, {}) | heading {} | speed {} | {} s across | fields drop {}/{} flight {}/{} info {}/{}",
+		LateZoneIndex, (int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds,
+		Aircrafts.at(0)->GetOffset("DropStartTime", false) != -1, Aircrafts.at(0)->GetOffset("DropEndTime", false) != -1,
+		Aircrafts.at(0)->GetOffset("FlightStartTime", false) != -1, Aircrafts.at(0)->GetOffset("FlightEndTime", false) != -1,
+		TimeTillDropEndOffset != -1, TimeTillFlightEndOffset != -1);
 
 	return true;
 }
 
-// Lategame loadout: once everyone has left the aircraft, hands out the materials and weapons. The aircraft itself is
-// started and placed on the game thread (HyperFNBusGameTick / HyperFNLateSetupAircraft).
-static inline DWORD WINAPI LateGameThread(LPVOID)
-{
-	float MaxTickRate = 30;
-
-	auto GameMode = Cast<AFortGameModeAthena>(GetWorld()->GetGameMode());
-	auto GameState = Cast<AFortGameStateAthena>(GameMode->GetGameState());
-
-	while (GameState->GetGamePhase() != EAthenaGamePhase::Aircraft)
-	{
-		Sleep(1000 / MaxTickRate);
-	}
-
-	/*
-	static auto MapInfoOffset = GameState->GetOffset("MapInfo");
-	auto MapInfo = GameState->Get(MapInfoOffset);
-
-	if (MapInfo)
-	{
-		static auto FlightInfosOffset = MapInfo->GetOffset("FlightInfos", false);
-
-		if (FlightInfosOffset != -1)
-		{
-			auto& FlightInfos = MapInfo->Get<TArray<FAircraftFlightInfo>>(FlightInfosOffset);
-
-			for (int i = 0; i < FlightInfos.Num(); i++)
-			{
-				auto FlightInfo = FlightInfos.AtPtr(i, FAircraftFlightInfo::GetStructSize());
-
-				FlightInfo->GetFlightSpeed() = FlightSpeed;
-				FlightInfo->GetFlightStartLocation() = LocationToStartAircraft;
-				FlightInfo->GetTimeTillDropStart() = DropStartTime;
-			}
-		}
-	}
-	*/
-
-	while (GameState->GetGamePhase() == EAthenaGamePhase::Aircraft)
-	{
-		Sleep(1000 / MaxTickRate);
-	}
-
-	static auto World_NetDriverOffset = GetWorld()->GetOffset("NetDriver");
-	auto WorldNetDriver = GetWorld()->Get<UNetDriver*>(World_NetDriverOffset);
-	auto& ClientConnections = WorldNetDriver->GetClientConnections();
-
-	for (int z = 0; z < ClientConnections.Num(); z++)
-	{
-		auto ClientConnection = ClientConnections.at(z);
-		auto FortPC = Cast<AFortPlayerController>(ClientConnection->GetPlayerController());
-
-		if (!FortPC)
-			continue;
-
-		auto WorldInventory = FortPC->GetWorldInventory();
-
-		if (!WorldInventory)
-			continue;
-
-		static auto WoodItemData = FindObject<UFortItemDefinition>(L"/Game/Items/ResourcePickups/WoodItemData.WoodItemData");
-		static auto StoneItemData = FindObject<UFortItemDefinition>(L"/Game/Items/ResourcePickups/StoneItemData.StoneItemData");
-		static auto MetalItemData = FindObject<UFortItemDefinition>(L"/Game/Items/ResourcePickups/MetalItemData.MetalItemData");
-
-		static auto Rifle = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Assault_AutoHigh_Athena_SR_Ore_T03.WID_Assault_AutoHigh_Athena_SR_Ore_T03");
-		static auto Shotgun = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Shotgun_Standard_Athena_SR_Ore_T03.WID_Shotgun_Standard_Athena_SR_Ore_T03")
-			? FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Shotgun_Standard_Athena_SR_Ore_T03.WID_Shotgun_Standard_Athena_SR_Ore_T03")
-			: FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Shotgun_Standard_Athena_C_Ore_T03.WID_Shotgun_Standard_Athena_C_Ore_T03");
-		static auto SMG = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Pistol_AutoHeavyPDW_Athena_R_Ore_T03.WID_Pistol_AutoHeavyPDW_Athena_R_Ore_T03")
-			? FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Pistol_AutoHeavyPDW_Athena_R_Ore_T03.WID_Pistol_AutoHeavyPDW_Athena_R_Ore_T03")
-			: FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Weapons/WID_Pistol_AutoHeavySuppressed_Athena_R_Ore_T03.WID_Pistol_AutoHeavySuppressed_Athena_R_Ore_T03");
-
-		static auto MiniShields = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Consumables/ShieldSmall/Athena_ShieldSmall.Athena_ShieldSmall");
-
-		static auto Shells = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Ammo/AthenaAmmoDataShells.AthenaAmmoDataShells");
-		static auto Medium = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Ammo/AthenaAmmoDataBulletsMedium.AthenaAmmoDataBulletsMedium");
-		static auto Light = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Ammo/AthenaAmmoDataBulletsLight.AthenaAmmoDataBulletsLight");
-		static auto Heavy = FindObject<UFortItemDefinition>(L"/Game/Athena/Items/Ammo/AthenaAmmoDataBulletsHeavy.AthenaAmmoDataBulletsHeavy");
-
-		WorldInventory->AddItem(WoodItemData, nullptr, 500);
-		WorldInventory->AddItem(StoneItemData, nullptr, 500);
-		WorldInventory->AddItem(MetalItemData, nullptr, 500);
-		WorldInventory->AddItem(Rifle, nullptr, 1);
-		WorldInventory->AddItem(Shotgun, nullptr, 1);
-		WorldInventory->AddItem(SMG, nullptr, 1);
-		WorldInventory->AddItem(MiniShields, nullptr, 6);
-		WorldInventory->AddItem(Shells, nullptr, 999);
-		WorldInventory->AddItem(Medium, nullptr, 999);
-		WorldInventory->AddItem(Light, nullptr, 999);
-		WorldInventory->AddItem(Heavy, nullptr, 999);
-
-		WorldInventory->Update();
-	}
-
-	static auto SafeZonesStartTimeOffset = GameState->GetOffset("SafeZonesStartTime");
-	GameState->Get<float>(SafeZonesStartTimeOffset) = 0.001f;
-
-	return 0;
-}
+// HyperFN: the lategame loadout is handed out on the game thread when each player leaves the aircraft
+// (HyperFNGiveLateLoadout in FortPlayerController.cpp), and the zone is spawned with the aircraft (HyperFNBusGameTick).
+// LateGameThread did both from a side thread and is gone.
 
 static inline void MainUI()
 {
