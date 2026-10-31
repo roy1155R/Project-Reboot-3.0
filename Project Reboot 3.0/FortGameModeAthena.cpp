@@ -39,6 +39,8 @@
 #include "TSubclassOf.h"
 #include "FortAthenaSupplyDrop.h"
 
+static void HyperFNDumpFields(UObject* Object, const std::string& FileName); // below
+
 static UFortPlaylistAthena* GetPlaylistToUse()
 {
 	// LOG_DEBUG(LogDev, "PlaylistName: {}", PlaylistName);
