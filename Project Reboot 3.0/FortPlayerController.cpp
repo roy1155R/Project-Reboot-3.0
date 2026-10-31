@@ -1782,13 +1782,31 @@ void AFortPlayerController::ClientOnPawnDiedHook(AFortPlayerController* PlayerCo
 						if (DamageCauser->IsA(FortProjectileBaseClass))
 						{
 							auto Owner = Cast<AFortWeapon>(DamageCauser->GetOwner());
-							KillerWeaponDef = Owner->IsValidLowLevel() ? Owner->GetWeaponData() : nullptr; // I just added the IsValidLowLevel check because what if the weapon destroys (idk)?
+							KillerWeaponDef = Owner && Owner->IsValidLowLevel() ? Owner->GetWeaponData() : nullptr; // I just added the IsValidLowLevel check because what if the weapon destroys (idk)?
 						}
 						if (auto Weapon = Cast<AFortWeapon>(DamageCauser))
 						{
 							KillerWeaponDef = Weapon->GetWeaponData();
 						}
 					}
+
+					// HyperFN: a projectile owned by the killer's pawn or controller rather than the weapon (as Erbium handles
+					// it): the weapon the killer holds is the one shown on the elimination screen ("WITH ASSAULT RIFLE").
+					if (!KillerWeaponDef && KillerPawn && KillerPawn != DeadPawn && KillerPawn->GetCurrentWeapon())
+						KillerWeaponDef = KillerPawn->GetCurrentWeapon()->GetWeaponData();
+
+					// HyperFN: the dead player's place for the elimination screen ("YOU PLACED #13"), set before the game
+					// removes them like Erbium does: the players still alive, this one included.
+					DeadPlayerState->GetPlace() = GameState->GetPlayersLeft();
+					static auto OnRep_PlaceFn = FindObject<UFunction>(L"/Script/FortniteGame.FortPlayerStateAthena.OnRep_Place");
+
+					if (OnRep_PlaceFn)
+						DeadPlayerState->ProcessEvent(OnRep_PlaceFn);
+
+					DeadPlayerState->ForceNetUpdate();
+					LOG_INFO(LogDev, "[HyperFN] {} placed #{} | eliminated by {} with {}", DeadPlayerState->GetPlayerName().ToString(), DeadPlayerState->GetPlace(),
+						KillerPlayerState && KillerPlayerState != DeadPlayerState ? KillerPlayerState->GetPlayerName().ToString() : std::string("-"),
+						KillerWeaponDef ? KillerWeaponDef->GetName() : std::string("-"));
 
 					RemoveFromAlivePlayers(GameMode, PlayerController, KillerPlayerState == DeadPlayerState ? nullptr : KillerPlayerState, KillerPawn, KillerWeaponDef, DeathCause, 0);
 

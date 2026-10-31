@@ -641,10 +641,22 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds, float& OutHa
 	const float HeadingX = cosf(YawRadians);
 	const float HeadingY = sinf(YawRadians);
 
+	// Height: 100 m over the zone was too low, the glider opened as soon as the players jumped. Like Erbium's lategame:
+	// at least 17500, and the glider opens by itself only 25 m above the ground, so the players skydive first.
 	FVector LocationToStartAircraft = ZoneCenterLocation;
 	LocationToStartAircraft.X -= HeadingX * HalfLength;
 	LocationToStartAircraft.Y -= HeadingY * HalfLength;
-	LocationToStartAircraft.Z += 10000;
+	LocationToStartAircraft.Z = (std::max)(ZoneCenterLocation.Z + 12000.f, 17500.f);
+
+	static auto ParachuteDistanceOffset = GameState->GetOffset("DefaultParachuteDeployTraceForGroundDistance", false);
+	float OldParachuteDistance = -1.f;
+
+	if (ParachuteDistanceOffset != -1)
+	{
+		OldParachuteDistance = GameState->Get<float>(ParachuteDistanceOffset);
+		GameState->Get<float>(ParachuteDistanceOffset) = 2500.f;
+		GameState->ForceNetUpdate();
+	}
 
 	FRotator AircraftRotation{};
 	AircraftRotation.Yaw = FlightYaw;
@@ -708,6 +720,7 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds, float& OutHa
 	OutCrossSeconds = CrossSeconds;
 	OutHalfLength = HalfLength;
 	OutSpeed = FlightSpeed;
+	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft at height {} (zone ground {}) | glider opens at {} (was {})", (int)LocationToStartAircraft.Z, (int)ZoneCenterLocation.Z, 2500, (int)OldParachuteDistance);
 	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft placed over zone [{}] at ({}, {}) | storm radius {} ({}) | heading {} | speed {} | {} s across | fields drop {}/{} flight {}/{} info {}/{}",
 		LateZoneIndex, (int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)HalfLength, SizeSource, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds,
 		Aircrafts.at(0)->GetOffset("DropStartTime", false) != -1, Aircrafts.at(0)->GetOffset("DropEndTime", false) != -1,
