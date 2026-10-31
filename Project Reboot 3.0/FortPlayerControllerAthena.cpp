@@ -492,8 +492,8 @@ static void HyperFNNotifyMatchEntered(AFortPlayerController* Controller)
 	if (!PlayerState || Notified.count(Controller))
 		return;
 
-	// Its one parameter is the event ids struct: the event id, then the event window id.
-	static auto NotifyFn = Controller->FindFunction("ClientNotifyMatchEntered");
+	// A client RPC of FortPlayerStateAthena. Its one parameter is the event ids struct: the event id, then the event window id.
+	static auto NotifyFn = PlayerState->FindFunction("ClientNotifyMatchEntered");
 
 	if (!NotifyFn || NotifyFn->GetPropertiesSize() != sizeof(FString) * 2)
 	{
@@ -511,7 +511,7 @@ static void HyperFNNotifyMatchEntered(AFortPlayerController* Controller)
 	std::wstring WindowId(Loadout["windowid"].begin(), Loadout["windowid"].end());
 
 	struct { FString EventId; FString EventWindowId; } Params{ EventId.c_str(), WindowId.c_str() };
-	Controller->ProcessEvent(NotifyFn, &Params);
+	PlayerState->ProcessEvent(NotifyFn, &Params);
 	Notified.insert(Controller);
 
 	LOG_INFO(LogDev, "[HyperFN] Arena HUD: {} entered event '{}' window '{}'", PlayerState->GetPlayerName().ToString(), Loadout["eventid"], Loadout["windowid"]);
