@@ -41,6 +41,7 @@
 
 static void HyperFNDumpFields(UObject* Object, const std::string& FileName); // below
 static void HyperFNFindArenaScoreClasses(); // below
+void HyperFNNotifyMatchEntered(AFortPlayerController* Controller); // FortPlayerControllerAthena.cpp
 
 static UFortPlaylistAthena* GetPlaylistToUse()
 {
@@ -1605,6 +1606,9 @@ void AFortGameModeAthena::Athena_HandleStartingNewPlayerHook(AFortGameModeAthena
 	auto CurrentPlaylist = CurrentPlaylistDataOffset == -1 && Fortnite_Version < 6 ? nullptr : GameState->GetCurrentPlaylist();
 
 	LOG_INFO(LogPlayer, "HandleStartingNewPlayer!");
+
+	// The arena event ids, before the client builds its HUD (see HyperFNNotifyMatchEntered).
+	HyperFNNotifyMatchEntered(Cast<AFortPlayerController>(NewPlayerActor));
 
 	if (Globals::bAutoRestart && GetWorld()->GetNetDriver()->GetClientConnections().Num() >= NumRequiredPlayersToStart)
 		HyperFNStartCountdown(GameMode, AutoBusStartSeconds);

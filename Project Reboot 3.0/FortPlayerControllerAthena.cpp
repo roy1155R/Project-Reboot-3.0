@@ -13,6 +13,7 @@
 #include "FortGadgetItemDefinition.h"
 #include "gui.h"
 #include "HyperFN.h"
+#include <map>
 
 void AFortPlayerControllerAthena::StartGhostModeHook(UObject* Context, FFrame* Stack, void* Ret)
 {
@@ -484,12 +485,14 @@ static void HyperFNStartEventScore(AFortPlayerController* Controller)
 // ClientNotifyMatchEntered (kept only with bUsePlayingEventIds=true in DefaultRuntimeOptions.ini). The backend writes
 // the arena player's event and event window into their locker file (eventid, windowid); everyone else gets empty ids,
 // which clears what an earlier arena match left on their client.
-static void HyperFNNotifyMatchEntered(AFortPlayerController* Controller)
+// The HUD looks for the event once, when it is built, which is about when the player's pawn spawns; so this goes out
+// from HandleStartingNewPlayer (seconds earlier) and once more before the pawn spawns, in case the first was too early.
+void HyperFNNotifyMatchEntered(AFortPlayerController* Controller)
 {
-	static std::set<AFortPlayerController*> Notified;
+	static std::map<AFortPlayerController*, int> Sent;
 	auto PlayerState = Controller ? Cast<AFortPlayerState>(Controller->GetPlayerState()) : nullptr;
 
-	if (!PlayerState || Notified.count(Controller))
+	if (!PlayerState || Sent[Controller] >= 2)
 		return;
 
 	// A client RPC of FortPlayerStateAthena. Its one parameter is the event ids struct (64 bytes in 14.60): the event id,
@@ -516,9 +519,61 @@ static void HyperFNNotifyMatchEntered(AFortPlayerController* Controller)
 	new (Params) FString(EventId.c_str());
 	new (Params + sizeof(FString)) FString(WindowId.c_str());
 	PlayerState->ProcessEvent(NotifyFn, Params);
-	Notified.insert(Controller);
+	Sent[Controller]++;
 
 	LOG_INFO(LogDev, "[HyperFN] Arena HUD: {} entered event '{}' window '{}' ({} byte parameters)", PlayerState->GetPlayerName().ToString(), Loadout["eventid"], Loadout["windowid"], ParamsSize);
+}
+
+// HyperFN: the skin's own parts (head, body, ...) chosen one by one like the backpack. ApplyCID reports success
+// even when the parts did not take (CID_333 Squishy stayed on the default body), so this also logs what loaded.
+static void HyperFNChooseCharacterParts(AFortPlayerPawn* Pawn, UObject* CID, const std::string& PlayerName)
+{
+	static auto HeroDefinitionOffset = CID->GetOffset("HeroDefinition", false);
+	auto HeroDefinition = HeroDefinitionOffset != -1 ? CID->Get(HeroDefinitionOffset) : nullptr;
+
+	if (!HeroDefinition)
+	{
+		LOG_INFO(LogDev, "[HyperFN] {} skin parts: no hero definition", PlayerName);
+		return;
+	}
+
+	static auto SpecializationsOffset = HeroDefinition->GetOffset("Specializations");
+	auto& Specializations = HeroDefinition->Get<TArray<TSoftObjectPtr<UObject>>>(SpecializationsOffset);
+	static auto SpecializationClass = FindObject<UClass>(L"/Script/FortniteGame.FortHeroSpecialization");
+	static auto CustomCharacterPartClass = FindObject<UClass>(L"/Script/FortniteGame.CustomCharacterPart");
+	std::string Parts;
+
+	for (int i = 0; i < Specializations.Num(); i++)
+	{
+		auto Specialization = Specializations.at(i, GetSoftObjectSize()).Get(SpecializationClass, true);
+
+		if (!Specialization)
+		{
+			Parts += " (specialization not loaded)";
+			continue;
+		}
+
+		static auto CharacterPartsOffset = Specialization->GetOffset("CharacterParts");
+		auto& CharacterParts = Specialization->Get<TArray<TSoftObjectPtr<UObject>>>(CharacterPartsOffset);
+
+		for (int z = 0; z < CharacterParts.Num(); z++)
+		{
+			auto& PartSoft = CharacterParts.at(z, GetSoftObjectSize());
+			auto Part = PartSoft.Get(CustomCharacterPartClass, true);
+
+			if (!Part)
+			{
+				Parts += " " + PartSoft.SoftObjectPtr.ObjectID.AssetPathName.ToString() + " (not loaded)";
+				continue;
+			}
+
+			static auto CharacterPartTypeOffset = Part->GetOffset("CharacterPartType");
+			Pawn->ServerChoosePart((EFortCustomPartType)Part->Get<uint8>(CharacterPartTypeOffset), Part);
+			Parts += " " + Part->GetName();
+		}
+	}
+
+	LOG_INFO(LogDev, "[HyperFN] {} skin parts:{}", PlayerName, Parts);
 }
 
 // HyperFN: without MCP the server never reads the player's locker, so everyone spawned in the default skin.
@@ -543,6 +598,9 @@ void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPaw
 				}
 
 				LOG_INFO(LogDev, "[HyperFN] {} skin {} -> {}", PlayerName, Loadout["character"], CID ? (ApplyCID(PawnAsFort, CID) ? "applied" : "apply failed") : "not found");
+
+				if (CID)
+					HyperFNChooseCharacterParts(PawnAsFort, CID, PlayerName);
 			}
 
 			if (Loadout.count("backpack") && !Loadout["backpack"].empty())
@@ -643,7 +701,6 @@ void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPaw
 			ControllerAsFort->ForceNetUpdate();
 
 			HyperFNStartEventScore(ControllerAsFort);
-			HyperFNNotifyMatchEntered(ControllerAsFort);
 		}
 }
 
