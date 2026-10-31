@@ -1851,6 +1851,32 @@ void AFortPlayerController::ClientOnPawnDiedHook(AFortPlayerController* PlayerCo
 
 					RemoveFromAlivePlayers(GameMode, PlayerController, KillerPlayerState == DeadPlayerState ? nullptr : KillerPlayerState, KillerPawn, KillerWeaponDef, DeathCause, 0);
 
+					// HyperFN: arena placement points, the way the game reports them to the players still alive when they
+					// reach a scoring place (the "+points" alert of the arena HUD). The tiers are the ones of the events
+					// list's arena templates (backend responses/eventlistactive.json): top 5 +5, top 3 +10, top 2 +25,
+					// win +50.
+					{
+						GET_PLAYLIST(GameState);
+						int Placement = GameState->GetPlayersLeft();
+						int Points = Placement == 1 ? 50 : Placement == 2 ? 25 : Placement == 3 ? 10 : Placement == 5 ? 5 : 0;
+						static auto ReportPlacementFn = FindObject<UFunction>(L"/Script/FortniteGame.FortPlayerControllerAthena.ClientReportTournamentPlacementPointsScored");
+
+						if (Points && ReportPlacementFn && CurrentPlaylist && CurrentPlaylist->GetName().find("Showdown") != std::string::npos)
+						{
+							auto& AlivePlayers = GameMode->GetAlivePlayers();
+
+							for (int i = 0; i < AlivePlayers.Num(); i++)
+							{
+								struct { int Placement; int PointsEarned; } Params{ Placement, Points };
+
+								if (auto Alive = AlivePlayers.at(i))
+									Alive->ProcessEvent(ReportPlacementFn, &Params);
+							}
+
+							LOG_INFO(LogDev, "[HyperFN] Arena: top {} reached, +{} reported to {} players", Placement, Points, AlivePlayers.Num());
+						}
+					}
+
 					// HyperFN: 14.60 does not announce the last team standing by itself (the winner kept playing as in
 					// creative); tell the winner and everyone spectating, like Reboot Ultimate does.
 					if (GameState->GetTeamsLeft() == 1 && KillerPlayerState && KillerPlayerState != DeadPlayerState)

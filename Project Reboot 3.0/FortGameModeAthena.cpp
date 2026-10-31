@@ -867,6 +867,7 @@ bool AFortGameModeAthena::Athena_ReadyToStartMatchHook(AFortGameModeAthena* Game
 
 			if (bArenaPlaylist)
 			{
+				HyperFNFindArenaScoreClasses();
 				HyperFNDumpFields(CurrentPlaylist, "dump_playlist.txt");
 				HyperFNDumpFields(GameState, "dump_gamestate.txt");
 				HyperFNDumpFields(GameMode, "dump_gamemode.txt");
@@ -1440,6 +1441,45 @@ static void HyperFNLogArenaScoreApi(UObject* Controller, UObject* PlayerState)
 
 		if (OnController != -1 || OnPlayerState != -1)
 			LOG_INFO(LogDev, "[HyperFN] Arena field {}: controller 0x{:x} player state 0x{:x}", Field, OnController, OnPlayerState);
+	}
+}
+
+// HyperFN: the arena score functions by name in any class (the ones above were not in the usual classes): logs the
+// class each belongs to with its parameters, and that class's score/event fields.
+static void HyperFNFindArenaScoreClasses()
+{
+	for (const char* Function : { "ServerSetPlayerEventScore", "OnRep_RemoteEventScore", "OnPlayerEventScoreChanged", "BP_HandlePlayerEventScoreChanged",
+		"OnRemoteClientEventScoreChanged", "OnEventScoreChanged", "ClientReportTournamentPlacementPointsScored", "GetCurrentEventScore", "OnRefreshEventScore" })
+	{
+		auto Found = FindObject(Function, nullptr, ANY_PACKAGE);
+
+		if (!Found)
+		{
+			LOG_INFO(LogDev, "[HyperFN] Arena class search: {} not found", Function);
+			continue;
+		}
+
+		std::string Params;
+
+		for (void* Property = *(void**)(__int64(Found) + Offsets::Children); Property; Property = GetNext(Property))
+			Params += std::format("{} @0x{:x}, ", GetFNameOfProp(Property)->ToString(), *(int*)(__int64(Property) + Offsets::Offset_Internal));
+
+		LOG_INFO(LogDev, "[HyperFN] Arena class search: {} ( {})", Found->GetFullName(), Params);
+
+		// The class that owns it, and its fields about scores and events.
+		auto Owner = Found->GetOuter();
+		std::string Fields;
+
+		for (auto Class = (UClass*)Owner; Class; Class = (UClass*)Class->GetSuperStruct())
+			for (void* Property = *(void**)(__int64(Class) + Offsets::Children); Property; Property = GetNext(Property))
+			{
+				auto Name = GetFNameOfProp(Property)->ToString();
+
+				if (Name.find("Score") != std::string::npos || Name.find("Event") != std::string::npos || Name.find("Tournament") != std::string::npos || Name.find("Hype") != std::string::npos)
+					Fields += std::format("{}.{} @0x{:x}, ", Class->GetName(), Name, *(int*)(__int64(Property) + Offsets::Offset_Internal));
+			}
+
+		LOG_INFO(LogDev, "[HyperFN] Arena class search: {} fields: {}", Owner ? Owner->GetName() : std::string("?"), Fields);
 	}
 }
 
