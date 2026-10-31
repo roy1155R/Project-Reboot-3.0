@@ -826,23 +826,41 @@ bool AFortGameModeAthena::Athena_ReadyToStartMatchHook(AFortGameModeAthena* Game
 			}
 		}
 
-		// HyperFN: arena matches show their points counter only when the match is known to be a tournament round. The
-		// playlist says which round it is; the game state gets it from the playlist when the game sets the playlist
-		// itself, which Reboot does not do. Log both and copy the playlist's onto the game state.
+		// HyperFN: arena matches show their points counter only when the game state says the match is an arena round
+		// (EventTournamentRound). In 14.60 the playlist has no such field and nothing sets it, so it stays "Unknown";
+		// on the arena playlist (Showdown) it is set to the enum's own "Arena" value, read from the game's enum.
 		if (CurrentPlaylist)
 		{
-			static auto PlaylistRoundOffset = CurrentPlaylist->GetOffset("EventTournamentRound", false);
 			static auto StateRoundOffset = GameState->GetOffset("EventTournamentRound", false);
-
-			int PlaylistRound = PlaylistRoundOffset != -1 ? CurrentPlaylist->Get<uint8_t>(PlaylistRoundOffset) : -1;
 			int StateRound = StateRoundOffset != -1 ? GameState->Get<uint8_t>(StateRoundOffset) : -1;
+			bool bArenaPlaylist = CurrentPlaylist->GetName().find("Showdown") != std::string::npos;
 
-			LOG_INFO(LogDev, "[HyperFN] Tournament round: playlist {} game state {}", PlaylistRound, StateRound);
+			// UEnum (UE 4.26): UField (0x30), FString CppType (0x30), TArray<TPair<FName, int64>> Names (0x40).
+			int64_t ArenaRound = -1;
+			std::string RoundNames;
 
-			if (PlaylistRoundOffset != -1 && StateRoundOffset != -1 && PlaylistRound != StateRound)
+			if (auto RoundEnum = FindObject<UObject>(L"/Script/FortniteGame.EEventTournamentRound"))
 			{
-				GameState->Get<uint8_t>(StateRoundOffset) = (uint8_t)PlaylistRound;
+				struct FEnumEntry { FName Name; int64_t Value; };
+				auto& Names = *(TArray<FEnumEntry>*)(__int64(RoundEnum) + 0x40);
+
+				for (int i = 0; Names.Num() > 0 && Names.Num() < 32 && i < Names.Num(); i++)
+				{
+					std::string Name = Names.at(i).Name.ToString();
+					RoundNames += std::format("{}={} ", Name, Names.at(i).Value);
+
+					if (Name.size() >= 5 && Name.compare(Name.size() - 5, 5, "Arena") == 0)
+						ArenaRound = Names.at(i).Value;
+				}
+			}
+
+			LOG_INFO(LogDev, "[HyperFN] Tournament round: game state {} | arena playlist {} | enum {}", StateRound, bArenaPlaylist, RoundNames);
+
+			if (bArenaPlaylist && StateRoundOffset != -1 && ArenaRound >= 0 && ArenaRound < 255 && StateRound != ArenaRound)
+			{
+				GameState->Get<uint8_t>(StateRoundOffset) = (uint8_t)ArenaRound;
 				GameState->ForceNetUpdate();
+				LOG_INFO(LogDev, "[HyperFN] Tournament round set to Arena ({})", ArenaRound);
 			}
 		}
 
