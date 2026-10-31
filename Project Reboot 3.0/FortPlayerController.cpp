@@ -28,6 +28,8 @@
 #include <unordered_set>
 
 void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPawn* PawnAsFort, AFortPlayerState* PlayerStateAsFort); // FortPlayerControllerAthena.cpp
+int HyperFNLoadoutValue(AFortPlayerController* Controller, const char* Key, int Default); // FortPlayerControllerAthena.cpp
+void HyperFNAddEventScore(AFortPlayerController* Controller, int Delta, const char* Why); // FortPlayerControllerAthena.cpp
 
 static void HyperFNApplyLoadout(AFortPlayerController* Controller)
 {
@@ -1851,6 +1853,13 @@ void AFortPlayerController::ClientOnPawnDiedHook(AFortPlayerController* PlayerCo
 
 					RemoveFromAlivePlayers(GameMode, PlayerController, KillerPlayerState == DeadPlayerState ? nullptr : KillerPlayerState, KillerPawn, KillerWeaponDef, DeathCause, 0);
 
+					// HyperFN: the killer's arena Hype counter goes up by their division's points per elimination.
+					if (KillerPlayerState && KillerPlayerState != DeadPlayerState)
+					{
+						if (auto KillerController = Cast<AFortPlayerController>(KillerPlayerState->GetOwner()))
+							HyperFNAddEventScore(KillerController, HyperFNLoadoutValue(KillerController, "arenaelim", 0), "elimination");
+					}
+
 					// HyperFN: arena placement points, the way the game reports them to the players still alive when they
 					// reach a scoring place (the "+points" alert of the arena HUD). The tiers are the ones of the events
 					// list's arena templates (backend responses/eventlistactive.json): top 5 +5, top 3 +10, top 2 +25,
@@ -1870,7 +1879,10 @@ void AFortPlayerController::ClientOnPawnDiedHook(AFortPlayerController* PlayerCo
 								struct { int Placement; int PointsEarned; } Params{ Placement, Points };
 
 								if (auto Alive = AlivePlayers.at(i))
+								{
 									Alive->ProcessEvent(ReportPlacementFn, &Params);
+									HyperFNAddEventScore(Alive, Points, "placement");
+								}
 							}
 
 							LOG_INFO(LogDev, "[HyperFN] Arena: top {} reached, +{} reported to {} players", Placement, Points, AlivePlayers.Num());

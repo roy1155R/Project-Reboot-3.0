@@ -230,6 +230,8 @@ static void HyperFNSpawnLateZone(AFortGameModeAthena* GameMode, AFortGameStateAt
 
 void HyperFNSetLobbyBuildFree(bool bOn); // FortGameModeAthena.cpp
 void HyperFNSetLobbyGlider(bool bOn); // FortGameModeAthena.cpp
+int HyperFNLoadoutValue(AFortPlayerController* Controller, const char* Key, int Default); // FortPlayerControllerAthena.cpp
+void HyperFNAddEventScore(AFortPlayerController* Controller, int Delta, const char* Why); // FortPlayerControllerAthena.cpp
 void HyperFNForceAircraftJump(AFortPlayerControllerAthena* PlayerController); // FortPlayerController.cpp
 void HyperFNGiveLateLoadout(AFortPlayerControllerAthena* PlayerController); // FortPlayerController.cpp
 
@@ -378,6 +380,9 @@ static void HyperFNStartBus(const char* Reason)
     // Building without materials and the glider anywhere are for the lobby only.
     HyperFNSetLobbyBuildFree(false);
     HyperFNSetLobbyGlider(false);
+
+    // Arena: the bus fare comes off the Hype counter now (0 in the low divisions).
+    HyperFNForEachController([](AFortPlayerControllerAthena* Controller) { HyperFNAddEventScore(Controller, HyperFNLoadoutValue(Controller, "arenabus", 0), "bus fare"); });
 
     GameMode->StartAircraftPhase();
 

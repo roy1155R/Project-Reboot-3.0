@@ -416,6 +416,69 @@ void AFortPlayerControllerAthena::ServerTeleportToPlaygroundLobbyIslandHook(AFor
 	AllCreativePlayerStarts.Free();
 }
 
+// HyperFN: the arena Hype counter. Every player has a FortBroadcastRemoteClientInfo whose RemoteEventScore is the event
+// score the game shows for them (OnRep_RemoteEventScore -> OnPlayerEventScoreChanged). On arena servers the backend
+// writes the player's Hype and their division's points into their locker file (hype, arenabus, arenaelim); the counter
+// starts at their Hype and follows the match: bus fare when the bus leaves, eliminations, placement tiers.
+int HyperFNLoadoutValue(AFortPlayerController* Controller, const char* Key, int Default)
+{
+	auto PlayerState = Controller ? Cast<AFortPlayerState>(Controller->GetPlayerState()) : nullptr;
+
+	if (!PlayerState)
+		return Default;
+
+	auto Loadout = HyperFN::ReadKeyValues("hyperfn\\loadouts\\" + PlayerState->GetPlayerName().ToString() + ".txt");
+	return Loadout.count(Key) && !Loadout[Key].empty() ? std::atoi(Loadout[Key].c_str()) : Default;
+}
+
+static AActor* HyperFNEventScoreInfo(AFortPlayerController* Controller, int*& OutScore)
+{
+	OutScore = nullptr;
+	static auto InfoOffset = Controller->GetOffset("BroadcastRemoteClientInfo", false);
+	auto Info = InfoOffset != -1 ? Controller->Get<AActor*>(InfoOffset) : nullptr;
+
+	if (!Info)
+		return nullptr;
+
+	static auto ScoreOffset = Info->GetOffset("RemoteEventScore", false);
+
+	if (ScoreOffset == -1)
+		return nullptr;
+
+	OutScore = (int*)(__int64(Info) + ScoreOffset);
+	return Info;
+}
+
+void HyperFNAddEventScore(AFortPlayerController* Controller, int Delta, const char* Why)
+{
+	int* Score = nullptr;
+	auto Info = Controller ? HyperFNEventScoreInfo(Controller, Score) : nullptr;
+
+	if (!Info || !Score || !Delta || HyperFNLoadoutValue(Controller, "hype", -1) < 0)
+		return;
+
+	*Score += Delta;
+	Info->ForceNetUpdate();
+	LOG_INFO(LogDev, "[HyperFN] Arena counter: {} {} -> {}", Why, Delta, *Score);
+}
+
+// Once per player: the counter starts at their Hype.
+static void HyperFNStartEventScore(AFortPlayerController* Controller)
+{
+	static std::set<AFortPlayerController*> Started;
+	int Hype = HyperFNLoadoutValue(Controller, "hype", -1);
+	int* Score = nullptr;
+	auto Info = Hype >= 0 && !Started.count(Controller) ? HyperFNEventScoreInfo(Controller, Score) : nullptr;
+
+	if (!Info || !Score)
+		return;
+
+	Started.insert(Controller);
+	LOG_INFO(LogDev, "[HyperFN] Arena counter: starts at {} Hype (was {})", Hype, *Score);
+	*Score = Hype;
+	Info->ForceNetUpdate();
+}
+
 // HyperFN: without MCP the server never reads the player's locker, so everyone spawned in the default skin.
 // The backend writes hyperfn\loadouts\<PlayerName>.txt when it sends a player here; apply it like "cheat applycid".
 // Called on possession and again when the loading screen drops: ApplyCosmeticLoadout runs there and puts the
@@ -536,6 +599,8 @@ void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPaw
 			PlayerStateAsFort->ForceNetUpdate();
 			PawnAsFort->ForceNetUpdate();
 			ControllerAsFort->ForceNetUpdate();
+
+			HyperFNStartEventScore(ControllerAsFort);
 		}
 }
 
