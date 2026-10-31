@@ -40,9 +40,18 @@ static void HyperFNApplyLoadout(AFortPlayerController* Controller)
 static std::mutex HyperFNReapplyLock;
 static std::vector<std::pair<AFortPlayerController*, ULONGLONG>> HyperFNReapplyQueue;
 
+// Players who died in the lobby, and when they get their new pawn (see ClientOnPawnDiedHook).
+static std::vector<std::pair<AFortPlayerController*, ULONGLONG>> HyperFNLobbyRespawnQueue;
+
+void HyperFNQueueLobbyRespawn(AFortPlayerController* Controller)
+{
+	std::lock_guard<std::mutex> Lock(HyperFNReapplyLock);
+	HyperFNLobbyRespawnQueue.push_back({ Controller, GetTickCount64() + 3000 });
+}
+
 void HyperFNTickReapply()
 {
-	std::vector<AFortPlayerController*> Due;
+	std::vector<AFortPlayerController*> Due, Respawn;
 
 	{
 		std::lock_guard<std::mutex> Lock(HyperFNReapplyLock);
@@ -54,10 +63,31 @@ void HyperFNTickReapply()
 			Due.push_back(It->first);
 			It = HyperFNReapplyQueue.erase(It);
 		}
+
+		for (auto It = HyperFNLobbyRespawnQueue.begin(); It != HyperFNLobbyRespawnQueue.end();)
+		{
+			if (Now < It->second) { ++It; continue; }
+			Respawn.push_back(It->first);
+			It = HyperFNLobbyRespawnQueue.erase(It);
+		}
 	}
 
 	for (auto Controller : Due)
 		HyperFNApplyLoadout(Controller);
+
+	// Lobby respawn, only while it is still the lobby (once the bus has left there is nothing to come back to).
+	auto GameMode = Cast<AFortGameModeAthena>(GetWorld()->GetGameMode());
+	auto GameState = GameMode ? GameMode->GetGameStateAthena() : nullptr;
+
+	for (auto Controller : Respawn)
+	{
+		if (!GameState || GameState->GetGamePhase() > EAthenaGamePhase::Warmup || !Controller || !Controller->IsValidLowLevel())
+			continue;
+
+		GameMode->RestartPlayer(Controller);
+		HyperFNApplyLoadout(Controller);
+		LOG_INFO(LogDev, "[HyperFN] Respawned a player in the lobby");
+	}
 }
 
 // Victory Royale: place 1, the game state's winner (spectators read it) and the winner's own victory screen.
@@ -1500,6 +1530,17 @@ void AFortPlayerController::ClientOnPawnDiedHook(AFortPlayerController* PlayerCo
 		return ClientOnPawnDiedOriginal(PlayerController, DeathReport);
 
 	auto DeathLocation = DeadPawn->GetActorLocation();
+
+	// HyperFN: dying in the lobby (building is free there, so long falls happen) is not an elimination. Reboot asks the
+	// playlist whether respawning is allowed, which says no for battle royale even in the warmup, so the player was taken
+	// out of the match and the match ended with nobody in it. Here they come back on the island a few seconds later, as
+	// in the real warmup (HyperFNTickReapply).
+	if (GameState->GetGamePhase() <= EAthenaGamePhase::Warmup && !DeadPlayerState->IsBot())
+	{
+		LOG_INFO(LogDev, "[HyperFN] {} died in the lobby, respawning on the island", DeadPlayerState->GetPlayerName().ToString());
+		HyperFNQueueLobbyRespawn(PlayerController);
+		return ClientOnPawnDiedOriginal(PlayerController, DeathReport);
+	}
 
 	static auto FallDamageEnumValue = 1;
 
