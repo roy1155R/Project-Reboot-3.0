@@ -197,6 +197,7 @@ static void HyperFNSpawnLateZone(AFortGameModeAthena* GameMode, AFortGameStateAt
     HyperFNLateZoneNextAt = GetTickCount64() + 500;
 }
 
+void HyperFNSetLobbyBuildFree(bool bOn); // FortGameModeAthena.cpp
 void HyperFNForceAircraftJump(AFortPlayerControllerAthena* PlayerController); // FortPlayerController.cpp
 void HyperFNGiveLateLoadout(AFortPlayerControllerAthena* PlayerController); // FortPlayerController.cpp
 
@@ -211,8 +212,7 @@ static ULONGLONG HyperFNLateSkipAt = 0;
 static bool HyperFNLateFinished = false;
 static ULONGLONG HyperFNLateZoneLogAt = 0;
 static ULONGLONG HyperFNLatePlacedAt = 0;
-static float HyperFNLateHalfLength = 0.f;
-static float HyperFNLateSpeed = 0.f;
+static HyperFNLatePath HyperFNLateFlight;
 
 static void HyperFNForEachController(const std::function<void(AFortPlayerControllerAthena*)>& Fn)
 {
@@ -234,19 +234,17 @@ static void HyperFNLateTick(AFortGameModeAthena* GameMode, AFortGameStateAthena*
     // The aircraft goes over the zone in the very frame the aircraft phase starts (HyperFNStartBus calls this right away).
     if (HyperFNLateStage == 1)
     {
-        float CrossSeconds = 0.f;
-
-        if (!HyperFNLateSetupAircraft(CrossSeconds, HyperFNLateHalfLength, HyperFNLateSpeed))
+        if (!HyperFNLateSetupAircraft(HyperFNLateFlight))
             return;
 
-        if (CrossSeconds <= 0.f)
+        if (HyperFNLateFlight.CrossSeconds <= 0.f)
         {
             HyperFNLateStage = 4;
             return;
         }
 
         HyperFNLatePlacedAt = Now;
-        HyperFNLateJumpAt = Now + (ULONGLONG)((CrossSeconds - 0.5f) * 1000.f);
+        HyperFNLateJumpAt = Now + (ULONGLONG)((HyperFNLateFlight.CrossSeconds - 0.5f) * 1000.f);
         HyperFNLateStage = 2;
     }
 
@@ -266,11 +264,13 @@ static void HyperFNLateTick(AFortGameModeAthena* GameMode, AFortGameStateAthena*
             auto RadiusOffset = Indicator ? Indicator->GetOffset("Radius", false) : -1;
             const float StormRadius = Indicator && RadiusOffset != -1 ? Indicator->Get<float>(RadiusOffset) : 0.f;
 
-            if (HyperFNLateStage == 2 && HyperFNLateSpeed > 0.f && StormRadius > 2000.f && StormRadius < 60000.f)
+            const float FarT = HyperFNLateFlight.FarT(StormRadius);
+
+            if (HyperFNLateStage == 2 && HyperFNLateFlight.Speed > 0.f && StormRadius > 2000.f && StormRadius < 60000.f && FarT > HyperFNLateFlight.StartT)
             {
-                const float CrossSeconds = (HyperFNLateHalfLength + StormRadius) / HyperFNLateSpeed;
+                const float CrossSeconds = (FarT - HyperFNLateFlight.StartT) / HyperFNLateFlight.Speed;
                 HyperFNLateJumpAt = HyperFNLatePlacedAt + (ULONGLONG)((CrossSeconds - 0.5f) * 1000.f);
-                LOG_INFO(LogDev, "[HyperFN] Lategame: storm radius {} (estimated {}), the far edge is {} s after the start", (int)StormRadius, (int)HyperFNLateHalfLength, (int)CrossSeconds);
+                LOG_INFO(LogDev, "[HyperFN] Lategame: storm radius {}, the aircraft leaves the storm {} s after the start", (int)StormRadius, (int)CrossSeconds);
             }
         }
     }
@@ -339,6 +339,9 @@ static void HyperFNStartBus(const char* Reason)
     AmountOfPlayersWhenBusStart = GameState->GetPlayersLeft();
 
     LOG_INFO(LogDev, "[HyperFN] Starting bus ({}){}", Reason, Globals::bLateGame.load() ? " | lategame" : "");
+
+    // Building without materials is for the lobby only.
+    HyperFNSetLobbyBuildFree(false);
 
     GameMode->StartAircraftPhase();
 

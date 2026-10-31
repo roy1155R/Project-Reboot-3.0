@@ -826,6 +826,26 @@ bool AFortGameModeAthena::Athena_ReadyToStartMatchHook(AFortGameModeAthena* Game
 			}
 		}
 
+		// HyperFN: arena matches show their points counter only when the match is known to be a tournament round. The
+		// playlist says which round it is; the game state gets it from the playlist when the game sets the playlist
+		// itself, which Reboot does not do. Log both and copy the playlist's onto the game state.
+		if (CurrentPlaylist)
+		{
+			static auto PlaylistRoundOffset = CurrentPlaylist->GetOffset("EventTournamentRound", false);
+			static auto StateRoundOffset = GameState->GetOffset("EventTournamentRound", false);
+
+			int PlaylistRound = PlaylistRoundOffset != -1 ? CurrentPlaylist->Get<uint8_t>(PlaylistRoundOffset) : -1;
+			int StateRound = StateRoundOffset != -1 ? GameState->Get<uint8_t>(StateRoundOffset) : -1;
+
+			LOG_INFO(LogDev, "[HyperFN] Tournament round: playlist {} game state {}", PlaylistRound, StateRound);
+
+			if (PlaylistRoundOffset != -1 && StateRoundOffset != -1 && PlaylistRound != StateRound)
+			{
+				GameState->Get<uint8_t>(StateRoundOffset) = (uint8_t)PlaylistRound;
+				GameState->ForceNetUpdate();
+			}
+		}
+
 		LOG_INFO(LogDev, "Initialized!");
 	}
 
@@ -1289,6 +1309,42 @@ static void HyperFNShowWaitingTimer(AFortGameStateAthena* GameState, float Durat
 	GameState->ForceNetUpdate();
 }
 
+// HyperFN: in the lobby everyone builds without materials (the controller's bBuildFree, what creative's infinite
+// materials use: the client lets you place pieces and ServerCreateBuildingActor takes nothing). On while the warmup
+// lasts, taken away from everyone when the bus starts (dllmain HyperFNStartBus).
+void HyperFNSetLobbyBuildFree(bool bOn)
+{
+	auto AllControllers = UGameplayStatics::GetAllActorsOfClass(GetWorld(), AFortPlayerControllerAthena::StaticClass());
+	int Changed = 0;
+
+	for (int i = 0; i < AllControllers.Num(); i++)
+	{
+		auto Controller = (AFortPlayerControllerAthena*)AllControllers.at(i);
+
+		if (!Controller)
+			continue;
+
+		static auto bBuildFreeOffset = Controller->GetOffset("bBuildFree", false);
+
+		if (bBuildFreeOffset == -1)
+			break;
+
+		static auto bBuildFreeFieldMask = GetFieldMask(Controller->GetProperty("bBuildFree"));
+
+		if (Controller->ReadBitfieldValue(bBuildFreeOffset, bBuildFreeFieldMask) == bOn)
+			continue;
+
+		Controller->SetBitfieldValue(bBuildFreeOffset, bBuildFreeFieldMask, bOn);
+		Controller->ForceNetUpdate();
+		Changed++;
+	}
+
+	AllControllers.Free();
+
+	if (Changed)
+		LOG_INFO(LogDev, "[HyperFN] Lobby building without materials {} for {} players", bOn ? "on" : "off", Changed);
+}
+
 void HyperFNBusGameTick(); // dllmain.cpp
 
 // HyperFN: called from UNetDriver::TickFlushHook, i.e. on the game thread, twice a second.
@@ -1323,6 +1379,9 @@ void HyperFNGameTick()
 
 	if (!bStartedBus && !HyperFN::BusDeadline.load() && GameState->GetGamePhase() == EAthenaGamePhase::Warmup)
 		HyperFNShowWaitingTimer(GameState, AutoBusStartSeconds);
+
+	if (!bStartedBus && GameState->GetGamePhase() == EAthenaGamePhase::Warmup)
+		HyperFNSetLobbyBuildFree(true);
 
 	// Log the game's own phase steps (warmup, get ready, bus...) as they change, to see what the lobby HUD is shown.
 	static auto GamePhaseStepOffset = GameState->GetOffset("GamePhaseStep", false);

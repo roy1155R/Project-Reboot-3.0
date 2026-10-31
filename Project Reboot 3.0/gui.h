@@ -526,14 +526,27 @@ static inline void PlayerTabs()
 	}
 }
 
+// HyperFN: the lategame flight line. The aircraft flies along the line through the safe circle's centre (C5), from where
+// it enters the storm circle around it (centre C4, radius R) to where it leaves it. Along the line from C5 the storm edge
+// is at t = -B +- sqrt(B^2 - Dist2 + R^2), B = heading . (C5 - C4), Dist2 = |C5 - C4|^2.
+struct HyperFNLatePath
+{
+	float CrossSeconds = 0.f;   // 0: lategame was turned off
+	float Speed = 0.f;
+	float StartT = 0.f;         // where the aircraft starts on the line (negative: before C5)
+	float B = 0.f, Dist2 = 0.f;
+
+	// Where the line leaves a storm of radius R (the far edge), or 0 when the line misses it.
+	float FarT(float R) const { float D = B * B - Dist2 + R * R; return D > 0.f ? -B + sqrtf(D) : 0.f; }
+};
+
 // HyperFN: places the lategame aircraft, in the same frame the aircraft phase starts so the players never see it at the
 // map's own start. Game thread only (HyperFNBusGameTick in dllmain): moving the aircraft from a side thread while the
-// game ticks it crashed the server. Returns false while the aircraft does not exist yet; OutCrossSeconds is 0 when
-// lategame had to be turned off. OutHalfLength and OutSpeed let the caller move the far edge once the zone has its
-// final size.
-static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds, float& OutHalfLength, float& OutSpeed)
+// game ticks it crashed the server. Returns false while the aircraft does not exist yet. Out lets the caller move the
+// far edge once the storm has its final size.
+static inline bool HyperFNLateSetupAircraft(HyperFNLatePath& Out)
 {
-	OutCrossSeconds = 0.f;
+	Out = HyperFNLatePath{};
 
 	auto GameMode = Cast<AFortGameModeAthena>(GetWorld()->GetGameMode());
 	auto GameState = Cast<AFortGameStateAthena>(GameMode->GetGameState());
@@ -583,14 +596,19 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds, float& OutHa
 		return true;
 	}
 
-	// HyperFN: the lategame zone (extra.cpp SetZoneToIndexHook) goes to phase 5, so the safe circle the players end up in
-	// is SafeZoneLocations[5] (the zone's own NextCenter at phase 5 is exactly this point), inside the phase 4 storm.
+	// HyperFN: the lategame zone (extra.cpp SetZoneToIndexHook) goes to phase 5: the safe circle the players end up in
+	// is SafeZoneLocations[5] (the zone's own NextCenter at phase 5 is exactly this point), and the storm around it, the
+	// circle the players see, is the phase 4 circle, SafeZoneLocations[4]. The safe circle can sit near the storm's edge,
+	// so the aircraft does not cross the storm through its own centre but along the line over the safe circle, from the
+	// storm's edge to its edge (going through the safe circle's centre with the storm's radius each way started it in the
+	// storm).
 	const int LateZoneIndex = (std::min)(5, SafeZoneLocations.Num() - 1);
 	FVector ZoneCenterLocation = SafeZoneLocations.at(LateZoneIndex);
+	const FVector StormCenter = SafeZoneLocations.at(LateZoneIndex - 1);
 
-	// The aircraft crosses the phase 4 storm from edge to edge. When this runs the zone has only just reached phase 3
-	// (HyperFNSpawnLateZone); each phase halves the circle, so the phase 4 storm is half the phase 3 circle (NextRadius).
-	// Once the zone has reached phase 5 the storm's own radius is known (Radius) and HyperFNLateTick moves the far edge.
+	// When this runs the zone has only just reached phase 3 (HyperFNSpawnLateZone); each phase halves the circle, so the
+	// phase 4 storm is half the phase 3 circle (NextRadius). Once the zone has reached phase 5 the storm's own radius is
+	// known (Radius) and HyperFNLateTick moves the far edge.
 	float HalfLength = 14000.f;
 	const char* SizeSource = "default";
 
@@ -618,11 +636,6 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds, float& OutHa
 	static auto FlightInfoOffset = Aircrafts.at(0)->GetOffset("FlightInfo", false);
 	static auto FlightSpeedOffset = Aircrafts.at(0)->GetOffset("FlightSpeed", false);
 
-	// The normal bus speed (7500) crossed the lategame storm (radius 100-140 m, it differs per match) in a few seconds;
-	// this one takes about 15 s whatever its size.
-	const float FlightSpeed = (std::min)((std::max)(HalfLength * 2.f / 15.f, 1000.f), 3000.f);
-	const float CrossSeconds = HalfLength * 2.f / FlightSpeed;
-
 	// Like Erbium's lategame (StartAircraftPhase hook): the flight is restarted from now, with the drop window open from
 	// the first second and ending when the aircraft leaves the zone. These fields are written on the game thread only;
 	// writing them from a side thread is what crashed the server before. The flight's start rotation is read (never
@@ -641,11 +654,30 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds, float& OutHa
 	const float HeadingX = cosf(YawRadians);
 	const float HeadingY = sinf(YawRadians);
 
+	// Where the line over the safe circle enters and leaves the storm (2D, heights do not matter here).
+	Out.B = HeadingX * (ZoneCenterLocation.X - StormCenter.X) + HeadingY * (ZoneCenterLocation.Y - StormCenter.Y);
+	Out.Dist2 = (ZoneCenterLocation.X - StormCenter.X) * (ZoneCenterLocation.X - StormCenter.X) + (ZoneCenterLocation.Y - StormCenter.Y) * (ZoneCenterLocation.Y - StormCenter.Y);
+	float NearT = -Out.B - sqrtf((std::max)(Out.B * Out.B - Out.Dist2 + HalfLength * HalfLength, 0.f));
+	float FarT = Out.FarT(HalfLength);
+
+	if (FarT - NearT < 4000.f) // the line hardly touches the storm (the zone list did not match): the old way
+	{
+		NearT = -HalfLength;
+		FarT = HalfLength;
+		Out.B = 0.f;
+		Out.Dist2 = 0.f;
+	}
+
+	// The normal bus speed (7500) crossed the lategame storm (radius 100-140 m, it differs per match) in a few seconds;
+	// this one takes about 15 s whatever its size.
+	const float FlightSpeed = (std::min)((std::max)((FarT - NearT) / 15.f, 1000.f), 3000.f);
+	const float CrossSeconds = (FarT - NearT) / FlightSpeed;
+
 	// Height: 100 m over the zone was too low, the glider opened as soon as the players jumped. Like Erbium's lategame:
 	// at least 17500, and the glider opens by itself only 25 m above the ground, so the players skydive first.
 	FVector LocationToStartAircraft = ZoneCenterLocation;
-	LocationToStartAircraft.X -= HeadingX * HalfLength;
-	LocationToStartAircraft.Y -= HeadingY * HalfLength;
+	LocationToStartAircraft.X += HeadingX * NearT;
+	LocationToStartAircraft.Y += HeadingY * NearT;
 	LocationToStartAircraft.Z = (std::max)(ZoneCenterLocation.Z + 12000.f, 17500.f);
 
 	static auto ParachuteDistanceOffset = GameState->GetOffset("DefaultParachuteDeployTraceForGroundDistance", false);
@@ -717,12 +749,14 @@ static inline bool HyperFNLateSetupAircraft(float& OutCrossSeconds, float& OutHa
 		CurrentAircraft->ForceNetUpdate();
 	}
 
-	OutCrossSeconds = CrossSeconds;
-	OutHalfLength = HalfLength;
-	OutSpeed = FlightSpeed;
+	Out.CrossSeconds = CrossSeconds;
+	Out.Speed = FlightSpeed;
+	Out.StartT = NearT;
 	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft at height {} (zone ground {}) | glider opens at {} (was {})", (int)LocationToStartAircraft.Z, (int)ZoneCenterLocation.Z, 2500, (int)OldParachuteDistance);
-	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft placed over zone [{}] at ({}, {}) | storm radius {} ({}) | heading {} | speed {} | {} s across | fields drop {}/{} flight {}/{} info {}/{}",
-		LateZoneIndex, (int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)HalfLength, SizeSource, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds,
+	LOG_INFO(LogDev, "[HyperFN] Lategame: safe circle at ({}, {}), storm at ({}, {}) radius {} ({}) | the aircraft enters the storm {} before the safe circle and leaves it {} after",
+		(int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)StormCenter.X, (int)StormCenter.Y, (int)HalfLength, SizeSource, (int)-NearT, (int)FarT);
+	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft placed over zone [{}] | heading {} | speed {} | {} s across | fields drop {}/{} flight {}/{} info {}/{}",
+		LateZoneIndex, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds,
 		Aircrafts.at(0)->GetOffset("DropStartTime", false) != -1, Aircrafts.at(0)->GetOffset("DropEndTime", false) != -1,
 		Aircrafts.at(0)->GetOffset("FlightStartTime", false) != -1, Aircrafts.at(0)->GetOffset("FlightEndTime", false) != -1,
 		TimeTillDropEndOffset != -1, TimeTillFlightEndOffset != -1);
