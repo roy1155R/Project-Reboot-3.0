@@ -492,10 +492,12 @@ static void HyperFNNotifyMatchEntered(AFortPlayerController* Controller)
 	if (!PlayerState || Notified.count(Controller))
 		return;
 
-	// A client RPC of FortPlayerStateAthena. Its one parameter is the event ids struct: the event id, then the event window id.
+	// A client RPC of FortPlayerStateAthena. Its one parameter is the event ids struct (64 bytes in 14.60): the event id,
+	// then the event window id, then fields the client does not need here, left empty.
 	static auto NotifyFn = PlayerState->FindFunction("ClientNotifyMatchEntered");
+	int ParamsSize = NotifyFn ? NotifyFn->GetPropertiesSize() : 0;
 
-	if (!NotifyFn || NotifyFn->GetPropertiesSize() != sizeof(FString) * 2)
+	if (ParamsSize < (int)sizeof(FString) * 2 || ParamsSize > 0x100)
 	{
 		static bool bLogged = false;
 
@@ -510,11 +512,13 @@ static void HyperFNNotifyMatchEntered(AFortPlayerController* Controller)
 	std::wstring EventId(Loadout["eventid"].begin(), Loadout["eventid"].end());
 	std::wstring WindowId(Loadout["windowid"].begin(), Loadout["windowid"].end());
 
-	struct { FString EventId; FString EventWindowId; } Params{ EventId.c_str(), WindowId.c_str() };
-	PlayerState->ProcessEvent(NotifyFn, &Params);
+	alignas(16) unsigned char Params[0x100] = {};
+	new (Params) FString(EventId.c_str());
+	new (Params + sizeof(FString)) FString(WindowId.c_str());
+	PlayerState->ProcessEvent(NotifyFn, Params);
 	Notified.insert(Controller);
 
-	LOG_INFO(LogDev, "[HyperFN] Arena HUD: {} entered event '{}' window '{}'", PlayerState->GetPlayerName().ToString(), Loadout["eventid"], Loadout["windowid"]);
+	LOG_INFO(LogDev, "[HyperFN] Arena HUD: {} entered event '{}' window '{}' ({} byte parameters)", PlayerState->GetPlayerName().ToString(), Loadout["eventid"], Loadout["windowid"], ParamsSize);
 }
 
 // HyperFN: without MCP the server never reads the player's locker, so everyone spawned in the default skin.
