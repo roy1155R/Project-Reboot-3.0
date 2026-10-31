@@ -158,6 +158,36 @@ static void HyperFNLogZone(AFortGameModeAthena* GameMode, AFortGameStateAthena* 
     LOG_INFO(LogDev, "[HyperFN] Zone {}: game phase {} | zone phase {} | indicator {} | SafeZonesStartTime {} | time {}", When,
         (int)GameState->GetGamePhase(), GameMode->Get<int>(SafeZonePhaseOffset), GameMode->GetSafeZoneIndicator() ? "yes" : "no",
         GameState->Get<float>(SafeZonesStartTimeOffset), UGameplayStatics::GetTimeSeconds(GetWorld()));
+
+    // The circles: every centre the zone list has, and the indicator's own centres and radii (whichever this version has).
+    static auto SafeZoneLocationsOffset = GameMode->GetOffset("SafeZoneLocations");
+    const auto& Locations = GameMode->Get<TArray<FVector>>(SafeZoneLocationsOffset);
+    std::string List;
+
+    for (int i = 0; i < Locations.Num() && i < 12; i++)
+        List += std::format("[{}]({}, {}) ", i, (int)Locations.at(i).X, (int)Locations.at(i).Y);
+
+    std::string Fields;
+
+    if (auto Indicator = GameMode->GetSafeZoneIndicator())
+    {
+        for (const char* Name : { "LastCenter", "PreviousCenter", "NextCenter", "NextNextCenter" })
+        {
+            auto Offset = Indicator->GetOffset(Name, false);
+            if (Offset != -1) Fields += std::format("{} ({}, {}) ", Name, (int)Indicator->Get<FVector>(Offset).X, (int)Indicator->Get<FVector>(Offset).Y);
+        }
+
+        for (const char* Name : { "Radius", "LastRadius", "PreviousRadius", "NextRadius", "NextNextRadius" })
+        {
+            auto Offset = Indicator->GetOffset(Name, false);
+            if (Offset != -1) Fields += std::format("{} {} ", Name, (int)Indicator->Get<float>(Offset));
+        }
+
+        auto Location = Indicator->GetActorLocation();
+        Fields += std::format("actor ({}, {})", (int)Location.X, (int)Location.Y);
+    }
+
+    LOG_INFO(LogDev, "[HyperFN] Zone {} circles: list {}| indicator {}", When, List, Fields);
 }
 
 // One step of the lategame zone (extra.cpp SetZoneToIndexHook: phase 3, then skipped shrinks to 4 and 5).
@@ -193,6 +223,7 @@ static void HyperFNSpawnLateZone(AFortGameModeAthena* GameMode, AFortGameStateAt
 
     HyperFN::ZoneLockUntil = ~0ull;
     HyperFNForceZonePhase(GameMode);
+    HyperFNLogZone(GameMode, GameState, "at step 1");
     HyperFNLateZoneStep = 1;
     HyperFNLateZoneNextAt = GetTickCount64() + 500;
 }
@@ -255,6 +286,9 @@ static void HyperFNLateTick(AFortGameModeAthena* GameMode, AFortGameStateAthena*
         HyperFNForceZonePhase(GameMode);
         HyperFNLateZoneStep++;
         HyperFNLateZoneNextAt = Now + 500;
+
+        if (HyperFNLateZoneStep == 2)
+            HyperFNLogZone(GameMode, GameState, "at step 2");
 
         if (HyperFNLateZoneStep == 3)
         {
