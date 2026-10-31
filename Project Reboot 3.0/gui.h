@@ -596,19 +596,22 @@ static inline bool HyperFNLateSetupAircraft(HyperFNLatePath& Out)
 		return true;
 	}
 
-	// HyperFN: the lategame zone (extra.cpp SetZoneToIndexHook) goes to phase 5: the safe circle the players end up in
-	// is SafeZoneLocations[5] (the zone's own NextCenter at phase 5 is exactly this point), and the storm around it, the
-	// circle the players see, is the phase 4 circle, SafeZoneLocations[4]. The safe circle can sit near the storm's edge,
-	// so the aircraft does not cross the storm through its own centre but along the line over the safe circle, from the
-	// storm's edge to its edge (going through the safe circle's centre with the storm's radius each way started it in the
-	// storm).
+	// HyperFN: the lategame zone (extra.cpp SetZoneToIndexHook) goes to phase 5. What the players see then (logged from
+	// the indicator): the storm circle, centre SafeZoneLocations[4] (its LastCenter) and radius LastRadius, and the
+	// white safe circle inside it, SafeZoneLocations[5] (NextCenter) with half that radius. The game does not keep the
+	// white circle in the middle: it was seen right on the storm's edge, half of it outside. So the aircraft flies along
+	// the line through the point halfway between the two centres, from the storm's edge to its edge: all of it over the
+	// safe area, between the middle of the zone and the white circle. (Through the white circle's centre with the storm's
+	// radius each way, half the flight was in the storm.)
 	const int LateZoneIndex = (std::min)(5, SafeZoneLocations.Num() - 1);
-	FVector ZoneCenterLocation = SafeZoneLocations.at(LateZoneIndex);
+	const FVector SafeCenter = SafeZoneLocations.at(LateZoneIndex);
 	const FVector StormCenter = SafeZoneLocations.at(LateZoneIndex - 1);
+	FVector ZoneCenterLocation = SafeCenter;
+	ZoneCenterLocation.X = (SafeCenter.X + StormCenter.X) * 0.5f;
+	ZoneCenterLocation.Y = (SafeCenter.Y + StormCenter.Y) * 0.5f;
 
-	// When this runs the zone has only just reached phase 3 (HyperFNSpawnLateZone); each phase halves the circle, so the
-	// phase 4 storm is half the phase 3 circle (NextRadius). Once the zone has reached phase 5 the storm's own radius is
-	// known (Radius) and HyperFNLateTick moves the far edge.
+	// When this runs the zone has only just reached phase 3 (HyperFNSpawnLateZone): the indicator already holds the
+	// phase 4 circle as NextNextRadius, the storm the players will see. Later (phase 5) it is the storm's own Radius.
 	float HalfLength = 14000.f;
 	const char* SizeSource = "default";
 
@@ -616,17 +619,20 @@ static inline bool HyperFNLateSetupAircraft(HyperFNLatePath& Out)
 	{
 		static auto SafeZonePhaseOffset = GameMode->GetOffset("SafeZonePhase");
 		static auto NextRadiusOffset = Indicator->GetOffset("NextRadius", false);
+		static auto NextNextRadiusOffset = Indicator->GetOffset("NextNextRadius", false);
 		static auto RadiusOffset = Indicator->GetOffset("Radius", false);
 
 		const int ZonePhase = GameMode->Get<int>(SafeZonePhaseOffset);
-		const float Estimate = ZonePhase == 3 && NextRadiusOffset != -1 ? Indicator->Get<float>(NextRadiusOffset) * 0.5f
-			: ZonePhase >= 5 && RadiusOffset != -1 ? Indicator->Get<float>(RadiusOffset) : 0.f;
+		float Size = 0.f;
 
-		if (Estimate > 2000.f && Estimate < 60000.f)
-		{
-			HalfLength = (std::min)((std::max)(Estimate, 8000.f), 30000.f);
-			SizeSource = ZonePhase == 3 ? "half the phase 3 circle" : "storm";
-		}
+		if (ZonePhase == 3 && NextNextRadiusOffset != -1) { Size = Indicator->Get<float>(NextNextRadiusOffset); SizeSource = "phase 4 circle"; }
+		else if (ZonePhase == 3 && NextRadiusOffset != -1) { Size = Indicator->Get<float>(NextRadiusOffset) * 0.5f; SizeSource = "half the phase 3 circle"; }
+		else if (ZonePhase >= 5 && RadiusOffset != -1) { Size = Indicator->Get<float>(RadiusOffset); SizeSource = "storm"; }
+
+		if (Size > 2000.f && Size < 60000.f)
+			HalfLength = (std::min)((std::max)(Size, 8000.f), 30000.f);
+		else
+			SizeSource = "default";
 	}
 
 	auto Aircrafts = GetAircrafts();
@@ -654,7 +660,7 @@ static inline bool HyperFNLateSetupAircraft(HyperFNLatePath& Out)
 	const float HeadingX = cosf(YawRadians);
 	const float HeadingY = sinf(YawRadians);
 
-	// Where the line over the safe circle enters and leaves the storm (2D, heights do not matter here).
+	// Where the line through that halfway point enters and leaves the storm (2D, heights do not matter here).
 	Out.B = HeadingX * (ZoneCenterLocation.X - StormCenter.X) + HeadingY * (ZoneCenterLocation.Y - StormCenter.Y);
 	Out.Dist2 = (ZoneCenterLocation.X - StormCenter.X) * (ZoneCenterLocation.X - StormCenter.X) + (ZoneCenterLocation.Y - StormCenter.Y) * (ZoneCenterLocation.Y - StormCenter.Y);
 	float NearT = -Out.B - sqrtf((std::max)(Out.B * Out.B - Out.Dist2 + HalfLength * HalfLength, 0.f));
@@ -753,8 +759,9 @@ static inline bool HyperFNLateSetupAircraft(HyperFNLatePath& Out)
 	Out.Speed = FlightSpeed;
 	Out.StartT = NearT;
 	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft at height {} (zone ground {}) | glider opens at {} (was {})", (int)LocationToStartAircraft.Z, (int)ZoneCenterLocation.Z, 2500, (int)OldParachuteDistance);
-	LOG_INFO(LogDev, "[HyperFN] Lategame: safe circle at ({}, {}), storm at ({}, {}) radius {} ({}) | the aircraft enters the storm {} before the safe circle and leaves it {} after",
-		(int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)StormCenter.X, (int)StormCenter.Y, (int)HalfLength, SizeSource, (int)-NearT, (int)FarT);
+	LOG_INFO(LogDev, "[HyperFN] Lategame: storm at ({}, {}) radius {} ({}), safe circle at ({}, {}) | the aircraft flies {} through ({}, {}): from {} before that point to {} after it, both on the storm's edge",
+		(int)StormCenter.X, (int)StormCenter.Y, (int)HalfLength, SizeSource, (int)SafeCenter.X, (int)SafeCenter.Y, (int)(FarT - NearT),
+		(int)ZoneCenterLocation.X, (int)ZoneCenterLocation.Y, (int)-NearT, (int)FarT);
 	LOG_INFO(LogDev, "[HyperFN] Lategame: aircraft placed over zone [{}] | heading {} | speed {} | {} s across | fields drop {}/{} flight {}/{} info {}/{}",
 		LateZoneIndex, (int)FlightYaw, (int)FlightSpeed, (int)CrossSeconds,
 		Aircrafts.at(0)->GetOffset("DropStartTime", false) != -1, Aircrafts.at(0)->GetOffset("DropEndTime", false) != -1,
