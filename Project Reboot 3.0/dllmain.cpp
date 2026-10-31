@@ -210,6 +210,9 @@ static ULONGLONG HyperFNLateJumpAt = 0;
 static ULONGLONG HyperFNLateSkipAt = 0;
 static bool HyperFNLateFinished = false;
 static ULONGLONG HyperFNLateZoneLogAt = 0;
+static ULONGLONG HyperFNLatePlacedAt = 0;
+static float HyperFNLateHalfLength = 0.f;
+static float HyperFNLateSpeed = 0.f;
 
 static void HyperFNForEachController(const std::function<void(AFortPlayerControllerAthena*)>& Fn)
 {
@@ -228,25 +231,12 @@ static void HyperFNLateTick(AFortGameModeAthena* GameMode, AFortGameStateAthena*
 {
     auto Now = GetTickCount64();
 
-    // The zone's remaining lategame steps, half a second apart; the aircraft is placed once the zone has its circle.
-    if (HyperFNLateZoneStep >= 1 && HyperFNLateZoneStep < 3 && Now >= HyperFNLateZoneNextAt)
-    {
-        HyperFNForceZonePhase(GameMode);
-        HyperFNLateZoneStep++;
-        HyperFNLateZoneNextAt = Now + 500;
-
-        if (HyperFNLateZoneStep == 3)
-            HyperFNLogZone(GameMode, GameState, "with the aircraft");
-    }
-
+    // The aircraft goes over the zone in the very frame the aircraft phase starts (HyperFNStartBus calls this right away).
     if (HyperFNLateStage == 1)
     {
         float CrossSeconds = 0.f;
 
-        if (HyperFNLateZoneStep >= 1 && HyperFNLateZoneStep < 3)
-            return;
-
-        if (!HyperFNLateSetupAircraft(CrossSeconds))
+        if (!HyperFNLateSetupAircraft(CrossSeconds, HyperFNLateHalfLength, HyperFNLateSpeed))
             return;
 
         if (CrossSeconds <= 0.f)
@@ -255,8 +245,34 @@ static void HyperFNLateTick(AFortGameModeAthena* GameMode, AFortGameStateAthena*
             return;
         }
 
+        HyperFNLatePlacedAt = Now;
         HyperFNLateJumpAt = Now + (ULONGLONG)((CrossSeconds - 0.5f) * 1000.f);
         HyperFNLateStage = 2;
+    }
+
+    // The zone's remaining lategame steps, half a second apart. With the last one the storm has its final size, so the
+    // far edge (where whoever is still on board jumps) is moved to it.
+    if (HyperFNLateZoneStep >= 1 && HyperFNLateZoneStep < 3 && Now >= HyperFNLateZoneNextAt)
+    {
+        HyperFNForceZonePhase(GameMode);
+        HyperFNLateZoneStep++;
+        HyperFNLateZoneNextAt = Now + 500;
+
+        if (HyperFNLateZoneStep == 3)
+        {
+            HyperFNLogZone(GameMode, GameState, "with the aircraft");
+
+            auto Indicator = GameMode->GetSafeZoneIndicator();
+            auto RadiusOffset = Indicator ? Indicator->GetOffset("Radius", false) : -1;
+            const float StormRadius = Indicator && RadiusOffset != -1 ? Indicator->Get<float>(RadiusOffset) : 0.f;
+
+            if (HyperFNLateStage == 2 && HyperFNLateSpeed > 0.f && StormRadius > 2000.f && StormRadius < 60000.f)
+            {
+                const float CrossSeconds = (HyperFNLateHalfLength + StormRadius) / HyperFNLateSpeed;
+                HyperFNLateJumpAt = HyperFNLatePlacedAt + (ULONGLONG)((CrossSeconds - 0.5f) * 1000.f);
+                LOG_INFO(LogDev, "[HyperFN] Lategame: storm radius {} (estimated {}), the far edge is {} s after the start", (int)StormRadius, (int)HyperFNLateHalfLength, (int)CrossSeconds);
+            }
+        }
     }
 
     if (HyperFNLateStage == 2 && Now >= HyperFNLateJumpAt)

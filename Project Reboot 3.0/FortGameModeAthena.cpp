@@ -1265,10 +1265,27 @@ void HyperFNStartCountdown(AFortGameModeAthena* GameMode, float Duration)
 	HyperFN::BusDeadline = GetTickCount64() + (unsigned long long)(Duration * 1000);
 }
 
+// HyperFN: while the lobby waits for players, the timer by the minimap shows the bus delay, standing still. The warmup
+// starts with a 100000 s countdown (so the game never starts the aircraft by itself), which the HUD leaves blank. The
+// end time is pushed on every tick so it never runs down (like Erbium does before its match is ready); the extra 0.95 s
+// keeps the shown value on the delay between ticks. HyperFNStartCountdown takes over once enough players are in.
+static void HyperFNShowWaitingTimer(AFortGameStateAthena* GameState, float Duration)
+{
+	float TimeSeconds = GameState->GetServerWorldTimeSeconds();
+
+	static auto WarmupCountdownEndTimeOffset = GameState->GetOffset("WarmupCountdownEndTime");
+	static auto WarmupCountdownStartTimeOffset = GameState->GetOffset("WarmupCountdownStartTime");
+
+	GameState->Get<float>(WarmupCountdownStartTimeOffset) = TimeSeconds;
+	GameState->Get<float>(WarmupCountdownEndTimeOffset) = TimeSeconds + Duration + 0.95f;
+	GameState->ForceNetUpdate();
+}
+
 void HyperFNBusGameTick(); // dllmain.cpp
 
 // HyperFN: called from UNetDriver::TickFlushHook, i.e. on the game thread, twice a second.
 //  - two players in and no countdown yet (a join that slipped past HandleStartingNewPlayer): start it
+//  - fewer players: keep the lobby timer showing the bus delay
 //  - the bus start and the lategame flight (HyperFNBusGameTick)
 void HyperFNGameTick()
 {
@@ -1291,6 +1308,9 @@ void HyperFNGameTick()
 	if (Globals::bAutoRestart && !bStartedBus && !HyperFN::BusDeadline.load() && World->GetNetDriver()
 		&& GameState->GetGamePhase() == EAthenaGamePhase::Warmup && World->GetNetDriver()->GetClientConnections().Num() >= NumRequiredPlayersToStart)
 		HyperFNStartCountdown(GameMode, AutoBusStartSeconds);
+
+	if (!bStartedBus && !HyperFN::BusDeadline.load() && GameState->GetGamePhase() == EAthenaGamePhase::Warmup)
+		HyperFNShowWaitingTimer(GameState, AutoBusStartSeconds);
 
 	HyperFNBusGameTick();
 }
