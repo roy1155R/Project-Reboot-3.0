@@ -862,6 +862,13 @@ bool AFortGameModeAthena::Athena_ReadyToStartMatchHook(AFortGameModeAthena* Game
 				GameState->ForceNetUpdate();
 				LOG_INFO(LogDev, "[HyperFN] Tournament round set to Arena ({})", ArenaRound);
 			}
+
+			if (bArenaPlaylist)
+			{
+				HyperFNDumpFields(CurrentPlaylist, "dump_playlist.txt");
+				HyperFNDumpFields(GameState, "dump_gamestate.txt");
+				HyperFNDumpFields(GameMode, "dump_gamemode.txt");
+			}
 		}
 
 		LOG_INFO(LogDev, "Initialized!");
@@ -1363,6 +1370,62 @@ void HyperFNSetLobbyBuildFree(bool bOn)
 		LOG_INFO(LogDev, "[HyperFN] Lobby building without materials {} for {} players", bOn ? "on" : "off", Changed);
 }
 
+// HyperFN: glider redeploy in the lobby, so players can open their glider when they jump off something (Reboot's
+// "Enable Glider Redeploy" option, GameState->DefaultGliderRedeployCanRedeploy). The match keeps the playlist's own
+// setting: it is put back when the bus starts.
+void HyperFNSetLobbyGlider(bool bOn)
+{
+	auto GameState = Cast<AFortGameStateAthena>(GetWorld()->GetGameState());
+
+	if (!GameState)
+		return;
+
+	static auto RedeployOffset = GameState->GetOffset("DefaultGliderRedeployCanRedeploy", false);
+	static float MatchValue = -1.f;
+
+	if (RedeployOffset == -1)
+		return;
+
+	float& Redeploy = GameState->Get<float>(RedeployOffset);
+
+	if (MatchValue < 0.f)
+		MatchValue = Redeploy;
+
+	float Wanted = bOn ? 1.f : MatchValue;
+
+	if (Redeploy == Wanted)
+		return;
+
+	Redeploy = Wanted;
+	GameState->ForceNetUpdate();
+	LOG_INFO(LogDev, "[HyperFN] Glider redeploy {} ({})", bOn ? "on for the lobby" : "back to the playlist's", Wanted);
+}
+
+// HyperFN: writes every field of an object (name, offset and the value read a few ways) to a file in the server's
+// folder, to see what the game has for a feature.
+static void HyperFNDumpFields(UObject* Object, const std::string& FileName)
+{
+	if (!Object)
+		return;
+
+	std::ofstream Out(HyperFN::Dir() + FileName);
+
+	for (auto Class = Object->ClassPrivate; Class; Class = (UClass*)Class->GetSuperStruct())
+	{
+		Out << "== " << Class->GetName() << "\n";
+
+		for (void* Property = *(void**)(__int64(Class) + Offsets::Children); Property; Property = GetNext(Property))
+		{
+			int Offset = *(int*)(__int64(Property) + Offsets::Offset_Internal);
+			auto Data = (uint8_t*)(__int64(Object) + Offset);
+			Out << std::format("{} @0x{:x} = u8 {} i32 {} f32 {} u64 0x{:x}\n", GetFNameOfProp(Property)->ToString(), Offset,
+				Data[0], *(int*)Data, *(float*)Data, *(uint64_t*)Data);
+		}
+	}
+
+	LOG_INFO(LogDev, "[HyperFN] Dumped {} to {}{}", Object->GetName(), HyperFN::Dir(), FileName);
+}
+
 void HyperFNBusGameTick(); // dllmain.cpp
 
 // HyperFN: called from UNetDriver::TickFlushHook, i.e. on the game thread, twice a second.
@@ -1399,7 +1462,35 @@ void HyperFNGameTick()
 		HyperFNShowWaitingTimer(GameState, AutoBusStartSeconds);
 
 	if (!bStartedBus && GameState->GetGamePhase() == EAthenaGamePhase::Warmup)
+	{
 		HyperFNSetLobbyBuildFree(true);
+		HyperFNSetLobbyGlider(true);
+	}
+
+	// Arena: the first player in the lobby, to see what the game has for the points counter (match state at start,
+	// see Athena_ReadyToStartMatchHook).
+	static bool bDumpedPlayer = false;
+
+	if (!bDumpedPlayer && GameState->GetGamePhase() == EAthenaGamePhase::Warmup)
+	{
+		GET_PLAYLIST(GameState);
+
+		if (CurrentPlaylist && CurrentPlaylist->GetName().find("Showdown") != std::string::npos)
+		{
+			auto AllControllers = UGameplayStatics::GetAllActorsOfClass(World, AFortPlayerControllerAthena::StaticClass());
+
+			if (AllControllers.Num() > 0)
+			{
+				auto Controller = (AFortPlayerControllerAthena*)AllControllers.at(0);
+				bDumpedPlayer = true;
+				HyperFNDumpFields(Controller, "dump_controller.txt");
+				HyperFNDumpFields(Controller->GetPlayerState(), "dump_playerstate.txt");
+				HyperFNDumpFields(GameState, "dump_gamestate_lobby.txt");
+			}
+
+			AllControllers.Free();
+		}
+	}
 
 	// Log the game's own phase steps (warmup, get ready, bus...) as they change, to see what the lobby HUD is shown.
 	static auto GamePhaseStepOffset = GameState->GetOffset("GamePhaseStep", false);

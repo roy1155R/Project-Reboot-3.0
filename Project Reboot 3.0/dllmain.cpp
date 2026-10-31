@@ -229,6 +229,7 @@ static void HyperFNSpawnLateZone(AFortGameModeAthena* GameMode, AFortGameStateAt
 }
 
 void HyperFNSetLobbyBuildFree(bool bOn); // FortGameModeAthena.cpp
+void HyperFNSetLobbyGlider(bool bOn); // FortGameModeAthena.cpp
 void HyperFNForceAircraftJump(AFortPlayerControllerAthena* PlayerController); // FortPlayerController.cpp
 void HyperFNGiveLateLoadout(AFortPlayerControllerAthena* PlayerController); // FortPlayerController.cpp
 
@@ -374,8 +375,9 @@ static void HyperFNStartBus(const char* Reason)
 
     LOG_INFO(LogDev, "[HyperFN] Starting bus ({}){}", Reason, Globals::bLateGame.load() ? " | lategame" : "");
 
-    // Building without materials is for the lobby only.
+    // Building without materials and the glider anywhere are for the lobby only.
     HyperFNSetLobbyBuildFree(false);
+    HyperFNSetLobbyGlider(false);
 
     GameMode->StartAircraftPhase();
 
