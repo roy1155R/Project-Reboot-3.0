@@ -479,6 +479,44 @@ static void HyperFNStartEventScore(AFortPlayerController* Controller)
 	Info->ForceNetUpdate();
 }
 
+// HyperFN: the arena Hype tile on the HUD. The HUD adds its arena widgets (ArenaTournamentUIExtensions) only when the
+// client's tournament manager knows the event the match belongs to, and the client learns it from
+// ClientNotifyMatchEntered (kept only with bUsePlayingEventIds=true in DefaultRuntimeOptions.ini). The backend writes
+// the arena player's event and event window into their locker file (eventid, windowid); everyone else gets empty ids,
+// which clears what an earlier arena match left on their client.
+static void HyperFNNotifyMatchEntered(AFortPlayerController* Controller)
+{
+	static std::set<AFortPlayerController*> Notified;
+	auto PlayerState = Controller ? Cast<AFortPlayerState>(Controller->GetPlayerState()) : nullptr;
+
+	if (!PlayerState || Notified.count(Controller))
+		return;
+
+	// Its one parameter is the event ids struct: the event id, then the event window id.
+	static auto NotifyFn = Controller->FindFunction("ClientNotifyMatchEntered");
+
+	if (!NotifyFn || NotifyFn->GetPropertiesSize() != sizeof(FString) * 2)
+	{
+		static bool bLogged = false;
+
+		if (!bLogged)
+			LOG_INFO(LogDev, "[HyperFN] Arena HUD: ClientNotifyMatchEntered {}", NotifyFn ? "has unexpected parameters (" + std::to_string(NotifyFn->GetPropertiesSize()) + " bytes)" : "not found");
+
+		bLogged = true;
+		return;
+	}
+
+	auto Loadout = HyperFN::ReadKeyValues("hyperfn\\loadouts\\" + PlayerState->GetPlayerName().ToString() + ".txt");
+	std::wstring EventId(Loadout["eventid"].begin(), Loadout["eventid"].end());
+	std::wstring WindowId(Loadout["windowid"].begin(), Loadout["windowid"].end());
+
+	struct { FString EventId; FString EventWindowId; } Params{ EventId.c_str(), WindowId.c_str() };
+	Controller->ProcessEvent(NotifyFn, &Params);
+	Notified.insert(Controller);
+
+	LOG_INFO(LogDev, "[HyperFN] Arena HUD: {} entered event '{}' window '{}'", PlayerState->GetPlayerName().ToString(), Loadout["eventid"], Loadout["windowid"]);
+}
+
 // HyperFN: without MCP the server never reads the player's locker, so everyone spawned in the default skin.
 // The backend writes hyperfn\loadouts\<PlayerName>.txt when it sends a player here; apply it like "cheat applycid".
 // Called on possession and again when the loading screen drops: ApplyCosmeticLoadout runs there and puts the
@@ -601,6 +639,7 @@ void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPaw
 			ControllerAsFort->ForceNetUpdate();
 
 			HyperFNStartEventScore(ControllerAsFort);
+			HyperFNNotifyMatchEntered(ControllerAsFort);
 		}
 }
 
@@ -646,6 +685,9 @@ void HyperFNApplyControllerLoadout(AFortPlayerController* Controller, AFortPlaye
 
 	if (Set)
 		LOG_INFO(LogDev, "[HyperFN] {} locker set on the controller before the pawn ({} items)", PlayerName, Set);
+
+	// Before the client builds its HUD, so the arena widgets are added with it.
+	HyperFNNotifyMatchEntered(Controller);
 }
 
 void AFortPlayerControllerAthena::ServerAcknowledgePossessionHook(APlayerController* Controller, APawn* Pawn)
