@@ -539,6 +539,50 @@ void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPaw
 		}
 }
 
+// HyperFN: the player's locker into the controller only (CosmeticLoadoutPC), before their pawn exists. The pawn takes
+// its glider and contrail from the controller when it is created; the lobby pawn was created before HyperFNApplyLoadout
+// ran, so the lobby glider was the default one (the match pawn, made at the jump, already had the right one).
+void HyperFNApplyControllerLoadout(AFortPlayerController* Controller, AFortPlayerState* PlayerState)
+{
+	auto ControllerLoadout = Controller && PlayerState ? Controller->GetCosmeticLoadout() : nullptr;
+
+	if (!ControllerLoadout)
+		return;
+
+	auto PlayerName = PlayerState->GetPlayerName().ToString();
+	auto Loadout = HyperFN::ReadKeyValues("hyperfn\\loadouts\\" + PlayerName + ".txt");
+	int Set = 0;
+
+	auto Apply = [&](const std::string& Key, const std::string& Folder, const wchar_t* ClassName, const std::string& Field)
+	{
+		if (!Loadout.count(Key) || Loadout[Key].empty())
+			return;
+
+		auto& Id = Loadout[Key];
+		auto Object = FindObject(Id + "." + Id, nullptr, ANY_PACKAGE);
+
+		if (!Object)
+			Object = LoadObject("/Game/Athena/Items/Cosmetics/" + Folder + "/" + Id + "." + Id, FindObject<UClass>(ClassName));
+
+		auto Offset = FindOffsetStruct("/Script/FortniteGame.FortAthenaLoadout", Field, false);
+
+		if (Object && Offset != -1)
+		{
+			*(UObject**)(__int64(ControllerLoadout) + Offset) = Object;
+			Set++;
+		}
+	};
+
+	Apply("character", "Characters", L"/Script/FortniteGame.AthenaCharacterItemDefinition", "Character");
+	Apply("backpack", "Backpacks", L"/Script/FortniteGame.AthenaBackpackItemDefinition", "Backpack");
+	Apply("pickaxe", "Pickaxes", L"/Script/FortniteGame.AthenaPickaxeItemDefinition", "Pickaxe");
+	Apply("glider", "Gliders", L"/Script/FortniteGame.AthenaGliderItemDefinition", "Glider");
+	Apply("contrail", "Contrails", L"/Script/FortniteGame.AthenaSkyDiveContrailItemDefinition", "SkyDiveContrail");
+
+	if (Set)
+		LOG_INFO(LogDev, "[HyperFN] {} locker set on the controller before the pawn ({} items)", PlayerName, Set);
+}
+
 void AFortPlayerControllerAthena::ServerAcknowledgePossessionHook(APlayerController* Controller, APawn* Pawn)
 {
 	LOG_INFO(LogDev, "ServerAcknowledgePossession!");

@@ -1403,6 +1403,46 @@ void HyperFNSetLobbyGlider(bool bOn)
 	LOG_INFO(LogDev, "[HyperFN] Glider redeploy {} ({})", bOn ? "on for the lobby" : "back to the playlist's", Wanted);
 }
 
+// HyperFN: where the arena points counter's functions and fields live and what they take (to report the points the
+// way the game expects). Logged once, when the first player is in the arena lobby.
+static void HyperFNLogArenaScoreApi(UObject* Controller, UObject* PlayerState)
+{
+	for (const char* Function : { "ClientReportTournamentPlacementPointsScored", "ServerSetPlayerEventScore", "OnRep_RemoteEventScore",
+		"OnPlayerEventScoreChanged", "BP_HandlePlayerEventScoreChanged", "OnRemoteClientEventScoreChanged", "OnEventScoreChanged" })
+	{
+		bool bFound = false;
+
+		for (const char* Class : { "FortPlayerControllerAthena", "FortPlayerStateAthena", "FortPlayerController", "FortPlayerState",
+			"FortGameStateAthena", "FortPlayerControllerZone", "FortPlayerStateZone", "FortPlayerPawnAthena", "FortPlayerControllerGameplay" })
+		{
+			auto Found = FindObject(std::string("/Script/FortniteGame.") + Class + "." + Function);
+
+			if (!Found)
+				continue;
+
+			bFound = true;
+			std::string Params;
+
+			for (void* Property = *(void**)(__int64(Found) + Offsets::Children); Property; Property = GetNext(Property))
+				Params += std::format("{} @0x{:x}, ", GetFNameOfProp(Property)->ToString(), *(int*)(__int64(Property) + Offsets::Offset_Internal));
+
+			LOG_INFO(LogDev, "[HyperFN] Arena API: {}.{} ( {})", Class, Function, Params);
+		}
+
+		if (!bFound)
+			LOG_INFO(LogDev, "[HyperFN] Arena API: {} not found in the usual classes", Function);
+	}
+
+	for (const char* Field : { "RemoteEventScore", "EventScore", "CurrentEventScore", "PlayerEventScore", "HypeScore", "TournamentScore", "EventScores", "CurrentHype" })
+	{
+		auto OnController = Controller ? Controller->GetOffset(Field, false) : -1;
+		auto OnPlayerState = PlayerState ? PlayerState->GetOffset(Field, false) : -1;
+
+		if (OnController != -1 || OnPlayerState != -1)
+			LOG_INFO(LogDev, "[HyperFN] Arena field {}: controller 0x{:x} player state 0x{:x}", Field, OnController, OnPlayerState);
+	}
+}
+
 // HyperFN: writes every field of an object (name, offset and the value read a few ways) to a file in the server's
 // folder, to see what the game has for a feature.
 static void HyperFNDumpFields(UObject* Object, const std::string& FileName)
@@ -1488,6 +1528,7 @@ void HyperFNGameTick()
 				HyperFNDumpFields(Controller, "dump_controller.txt");
 				HyperFNDumpFields(Controller->GetPlayerState(), "dump_playerstate.txt");
 				HyperFNDumpFields(GameState, "dump_gamestate_lobby.txt");
+				HyperFNLogArenaScoreApi(Controller, Controller->GetPlayerState());
 			}
 
 			AllControllers.Free();

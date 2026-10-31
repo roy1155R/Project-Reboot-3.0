@@ -11,6 +11,8 @@
 #include "calendar.h"
 #include "hooking.h"
 
+void HyperFNApplyControllerLoadout(AFortPlayerController* Controller, AFortPlayerState* PlayerState); // FortPlayerControllerAthena.cpp
+
 void AGameModeBase::RestartPlayerAtTransform(AController* NewPlayer, FTransform SpawnTransform)
 {
 	static auto RestartPlayerAtTransformFn = FindObject<UFunction>(L"/Script/Engine.GameModeBase.RestartPlayerAtTransform");
@@ -120,6 +122,10 @@ APawn* AGameModeBase::SpawnDefaultPawnForHook(AGameModeBase* GameMode, AControll
 	static auto PawnClass = FindObject<UClass>(L"/Game/Athena/PlayerPawn_Athena.PlayerPawn_Athena_C");
 	static auto DefaultPawnClassOffset = GameMode->GetOffset("DefaultPawnClass");
 	GameMode->Get<UClass*>(DefaultPawnClassOffset) = PawnClass;
+
+	// HyperFN: the player's locker on the controller before the pawn is made, so the pawn gets their glider (the lobby
+	// glider was the default one).
+	HyperFNApplyControllerLoadout(NewPlayerAsAthena, PlayerStateAthena);
 
 #if 1
 	static auto SpawnDefaultPawnAtTransformFn = FindObject<UFunction>(L"/Script/Engine.GameModeBase.SpawnDefaultPawnAtTransform");
