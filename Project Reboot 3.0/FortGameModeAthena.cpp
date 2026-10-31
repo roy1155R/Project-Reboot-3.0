@@ -40,6 +40,7 @@
 #include "FortAthenaSupplyDrop.h"
 
 static void HyperFNDumpFields(UObject* Object, const std::string& FileName); // below
+static void HyperFNFindArenaScoreClasses(); // below
 
 static UFortPlaylistAthena* GetPlaylistToUse()
 {
