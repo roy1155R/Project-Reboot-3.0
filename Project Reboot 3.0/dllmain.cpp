@@ -393,6 +393,8 @@ static DWORD WINAPI HyperFNThread(LPVOID)
 
         if (HyperFN::TakeCommand("startbus"))
             HyperFN::StartBusRequest = 1;
+        else if (HyperFN::TakeCommand("countdown"))
+            HyperFN::StartCountdownRequest = 1;
     }
 
     return 0;

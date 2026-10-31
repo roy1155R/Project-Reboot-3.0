@@ -1259,6 +1259,14 @@ void HyperFNStartCountdown(AFortGameModeAthena* GameMode, float Duration)
 	GameState->Get<float>(WarmupCountdownEndTimeOffset) = TimeSeconds + Duration;
 	GameMode->Get<float>(WarmupCountdownDurationOffset) = Duration;
 	GameMode->Get<float>(WarmupEarlyCountdownDurationOffset) = Duration;
+
+	// The timer by the minimap only shows in the "get ready" step, which the game itself enters for the last 10 s of
+	// the warmup (as Erbium's game phase logic does). Enter it now, so the whole countdown shows.
+	static auto GamePhaseStepOffset = GameState->GetOffset("GamePhaseStep", false);
+
+	if (GamePhaseStepOffset != -1)
+		GameState->Get<uint8_t>(GamePhaseStepOffset) = 3; // EAthenaGamePhaseStep::GetReady
+
 	GameState->ForceNetUpdate();
 
 	LOG_INFO(LogDev, "Auto starting bus in {}.", (int)Duration);
@@ -1309,8 +1317,27 @@ void HyperFNGameTick()
 		&& GameState->GetGamePhase() == EAthenaGamePhase::Warmup && World->GetNetDriver()->GetClientConnections().Num() >= NumRequiredPlayersToStart)
 		HyperFNStartCountdown(GameMode, AutoBusStartSeconds);
 
+	// "countdown" from the admin panel: start the warmup countdown now, whatever the player count.
+	if (HyperFN::StartCountdownRequest.exchange(0) && GameState->GetGamePhase() == EAthenaGamePhase::Warmup)
+		HyperFNStartCountdown(GameMode, AutoBusStartSeconds);
+
 	if (!bStartedBus && !HyperFN::BusDeadline.load() && GameState->GetGamePhase() == EAthenaGamePhase::Warmup)
 		HyperFNShowWaitingTimer(GameState, AutoBusStartSeconds);
+
+	// Log the game's own phase steps (warmup, get ready, bus...) as they change, to see what the lobby HUD is shown.
+	static auto GamePhaseStepOffset = GameState->GetOffset("GamePhaseStep", false);
+
+	if (GamePhaseStepOffset != -1)
+	{
+		static int LastStep = -1;
+		int Step = GameState->Get<uint8_t>(GamePhaseStepOffset);
+
+		if (Step != LastStep)
+		{
+			LOG_INFO(LogDev, "[HyperFN] Game phase step {} -> {} (game phase {})", LastStep, Step, (int)GameState->GetGamePhase());
+			LastStep = Step;
+		}
+	}
 
 	HyperFNBusGameTick();
 }
