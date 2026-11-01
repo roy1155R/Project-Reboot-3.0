@@ -1107,6 +1107,19 @@ void ChangeLevels()
 
     LOG_INFO(LogDev, "Using \"{}\" as our map.", bUseSwitchLevel ? Level.ToString() : LevelB.ToString());
 
+    // HyperFN: the menu's lobby background (Frontend_Lobby_Background) streams in its character pedestals while the map
+    // switch below runs. A pedestal whose BeginPlay ran after the local player was removed, but before the functions
+    // further down were nulled, crashed the server (access violation writing 0xba0, right after "BeginPlayPedestal
+    // Start"): about half of the starts after a match, which doubled the wait. So that one is nulled before anything.
+    if (auto PedestalBeginPlay = Memcury::Scanner::FindPattern("40 53 41 56 48 83 EC 48 48 89 6C 24 ? 48 8B D9 48 89 74 24 ? 48 89 7C 24").Get())
+    {
+        DWORD OldProtection, Temp;
+        VirtualProtect((PVOID)PedestalBeginPlay, 1, PAGE_EXECUTE_READWRITE, &OldProtection);
+        *(uint8_t*)PedestalBeginPlay = 0xC3;
+        VirtualProtect((PVOID)PedestalBeginPlay, 1, OldProtection, &Temp);
+        LOG_INFO(LogDev, "[HyperFN] Pedestal BeginPlay nulled before the map switch (0x{:x})", PedestalBeginPlay - __int64(GetModuleHandleW(0)));
+    }
+
     auto LocalPC = GetLocalPlayerController();
 
     LOG_INFO(LogDev, "Got PC: {}", __int64(LocalPC));
