@@ -13,6 +13,7 @@
 #include "FortGadgetItemDefinition.h"
 #include "gui.h"
 #include "HyperFN.h"
+#include "KismetStringLibrary.h"
 #include <map>
 
 void AFortPlayerControllerAthena::StartGhostModeHook(UObject* Context, FFrame* Stack, void* Ret)
@@ -576,6 +577,146 @@ static void HyperFNChooseCharacterParts(AFortPlayerPawn* Pawn, UObject* CID, con
 	LOG_INFO(LogDev, "[HyperFN] {} skin parts:{}", PlayerName, Parts);
 }
 
+// HyperFN: the skin's styles. The backend writes "charactervariants=Material.Mat3;Parts.Stage2" (channel.active, as
+// the locker saves them) into the loadout file; the game's tags are Cosmetics.Variant.Channel.<channel> and
+// Cosmetics.Variant.Property.<active>.
+using HyperFNVariants = std::vector<std::pair<std::string, std::string>>;
+
+static HyperFNVariants HyperFNParseVariants(const std::string& Text)
+{
+	HyperFNVariants Out;
+	size_t Start = 0;
+
+	while (Start < Text.size())
+	{
+		auto End = Text.find(';', Start);
+		if (End == std::string::npos) End = Text.size();
+		auto Pair = Text.substr(Start, End - Start);
+		auto Dot = Pair.find('.');
+		if (Dot != std::string::npos && Dot > 0 && Dot + 1 < Pair.size())
+			Out.push_back({ Pair.substr(0, Dot), Pair.substr(Dot + 1) });
+		Start = End + 1;
+	}
+
+	return Out;
+}
+
+static FName HyperFNTag(const std::string& Tag)
+{
+	std::wstring Wide(Tag.begin(), Tag.end());
+	return UKismetStringLibrary::Conv_StringToName(Wide.c_str());
+}
+
+static bool HyperFNSameName(const void* A, const FName& B) { return memcmp(A, &B, sizeof(FName)) == 0; }
+
+// The styles into a loadout's CharacterVariantChannels (TArray<FMcpVariantChannelInfo>): the clients apply them when
+// the pawn's loadout replicates (OnRep_CosmeticLoadout), material styles included. Returns how many were set, or -1
+// when this build has no such fields.
+static int HyperFNSetVariantChannels(void* Loadout, UObject* CID, const HyperFNVariants& Variants)
+{
+	static auto InfoStruct = FindObject<UStruct>(L"/Script/FortniteGame.McpVariantChannelInfo");
+	static auto LoadoutStruct = FindObject<UStruct>(L"/Script/FortniteGame.FortAthenaLoadout");
+
+	if (!Loadout || !InfoStruct || !LoadoutStruct)
+		return -1;
+
+	static auto ChannelsOffset = FindOffsetStruct("/Script/FortniteGame.FortAthenaLoadout", "CharacterVariantChannels", false);
+	static auto ChannelTagOffset = FindOffsetStruct("/Script/FortniteGame.McpVariantChannelInfo", "VariantChannelTag", false);
+	static auto ActiveTagOffset = FindOffsetStruct("/Script/FortniteGame.McpVariantChannelInfo", "ActiveVariantTag", false);
+	static auto UsedForOffset = FindOffsetStruct("/Script/FortniteGame.McpVariantChannelInfo", "ItemVariantIsUsedFor", false);
+	static auto InfoSize = InfoStruct->GetPropertiesSize();
+
+	if (ChannelsOffset <= 0 || ChannelTagOffset < 0 || ActiveTagOffset < 0 || InfoSize <= 0)
+		return -1;
+
+	auto& Channels = *(TArray<uint8_t>*)(__int64(Loadout) + ChannelsOffset);
+	Channels.ArrayNum = 0;
+	std::vector<uint8_t> Info(InfoSize);
+
+	for (auto& [Channel, Active] : Variants)
+	{
+		std::fill(Info.begin(), Info.end(), 0);
+		*(FName*)(Info.data() + ChannelTagOffset) = HyperFNTag("Cosmetics.Variant.Channel." + Channel);
+		*(FName*)(Info.data() + ActiveTagOffset) = HyperFNTag("Cosmetics.Variant.Property." + Active);
+
+		if (UsedForOffset > 0)
+			*(UObject**)(Info.data() + UsedForOffset) = CID;
+
+		Channels.AddPtr(Info.data(), InfoSize);
+	}
+
+	return Channels.Num();
+}
+
+// Styles that swap parts (Parts.Stage2 and the like): the skin's FortCosmeticCharacterPartVariant lists the parts of
+// each option, and the server chooses them like the base parts so everyone sees them.
+static std::string HyperFNChooseVariantParts(AFortPlayerPawn* Pawn, UObject* CID, const HyperFNVariants& Variants)
+{
+	static auto ItemVariantsOffset = CID->GetOffset("ItemVariants", false);
+	static auto PartDefStruct = FindObject<UStruct>(L"/Script/FortniteGame.PartVariantDef");
+
+	if (ItemVariantsOffset == -1 || !PartDefStruct)
+		return " (this build has no part styles)";
+
+	static auto PartDefSize = PartDefStruct->GetPropertiesSize();
+	static auto CustomizationTagOffset = FindOffsetStruct("/Script/FortniteGame.PartVariantDef", "CustomizationVariantTag", false);
+	static auto VariantPartsOffset = FindOffsetStruct("/Script/FortniteGame.PartVariantDef", "VariantParts", false);
+	static auto CustomCharacterPartClass = FindObject<UClass>(L"/Script/FortniteGame.CustomCharacterPart");
+
+	if (CustomizationTagOffset < 0 || VariantPartsOffset <= 0)
+		return " (part style fields not found)";
+
+	auto& ItemVariants = CID->Get<TArray<UObject*>>(ItemVariantsOffset);
+	std::string Chosen;
+
+	for (int i = 0; i < ItemVariants.Num(); i++)
+	{
+		auto Variant = ItemVariants.at(i);
+
+		if (!Variant)
+			continue;
+
+		auto ChannelOffset = Variant->GetOffset("VariantChannelTag", false);
+		auto PartOptionsOffset = Variant->GetOffset("PartOptions", false);
+
+		if (ChannelOffset == -1 || PartOptionsOffset == -1)
+			continue;
+
+		for (auto& [Channel, Active] : Variants)
+		{
+			if (!HyperFNSameName(Variant->GetPtr<FName>(ChannelOffset), HyperFNTag("Cosmetics.Variant.Channel." + Channel)))
+				continue;
+
+			auto ActiveTag = HyperFNTag("Cosmetics.Variant.Property." + Active);
+			auto& Options = Variant->Get<TArray<uint8_t>>(PartOptionsOffset);
+
+			for (int o = 0; o < Options.Num(); o++)
+			{
+				auto Option = (uint8_t*)Options.AtPtr(o, PartDefSize);
+
+				if (!HyperFNSameName(Option + CustomizationTagOffset, ActiveTag))
+					continue;
+
+				auto& Parts = *(TArray<TSoftObjectPtr<UObject>>*)(Option + VariantPartsOffset);
+
+				for (int p = 0; p < Parts.Num(); p++)
+				{
+					auto Part = Parts.at(p, GetSoftObjectSize()).Get(CustomCharacterPartClass, true);
+
+					if (!Part)
+						continue;
+
+					static auto CharacterPartTypeOffset = Part->GetOffset("CharacterPartType");
+					Pawn->ServerChoosePart((EFortCustomPartType)Part->Get<uint8>(CharacterPartTypeOffset), Part);
+					Chosen += " " + Part->GetName();
+				}
+			}
+		}
+	}
+
+	return Chosen.empty() ? " (none)" : Chosen;
+}
+
 // HyperFN: without MCP the server never reads the player's locker, so everyone spawned in the default skin.
 // The backend writes hyperfn\loadouts\<PlayerName>.txt when it sends a player here; apply it like "cheat applycid".
 // Called on possession and again when the loading screen drops: ApplyCosmeticLoadout runs there and puts the
@@ -586,6 +727,7 @@ void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPaw
 		{
 			auto PlayerName = PlayerStateAsFort->GetPlayerName().ToString();
 			auto Loadout = HyperFN::ReadKeyValues("hyperfn\\loadouts\\" + PlayerName + ".txt");
+			auto Variants = HyperFNParseVariants(Loadout["charactervariants"]);
 
 			if (Loadout.count("character") && !Loadout["character"].empty())
 			{
@@ -601,6 +743,9 @@ void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPaw
 
 				if (CID)
 					HyperFNChooseCharacterParts(PawnAsFort, CID, PlayerName);
+
+				if (CID && !Variants.empty())
+					LOG_INFO(LogDev, "[HyperFN] {} style {} parts:{}", PlayerName, Loadout["charactervariants"], HyperFNChooseVariantParts(PawnAsFort, CID, Variants));
 			}
 
 			if (Loadout.count("backpack") && !Loadout["backpack"].empty())
@@ -693,7 +838,15 @@ void HyperFNApplyLoadout(AFortPlayerController* ControllerAsFort, AFortPlayerPaw
 			SetLoadoutField("SkyDiveContrail", LoadCosmetic("contrail", "Contrails", L"/Script/FortniteGame.AthenaSkyDiveContrailItemDefinition"));
 
 			// Keep the loadout struct in step with what we applied, so anything reading it gets our skin too.
-			SetLoadoutField("Character", LoadCosmetic("character", "Characters", L"/Script/FortniteGame.AthenaCharacterItemDefinition"));
+			auto CharacterObject = LoadCosmetic("character", "Characters", L"/Script/FortniteGame.AthenaCharacterItemDefinition");
+			SetLoadoutField("Character", CharacterObject);
+
+			if (CharacterObject && !Variants.empty())
+			{
+				auto OnController = HyperFNSetVariantChannels(ControllerLoadout, CharacterObject, Variants);
+				auto OnPawn = HyperFNSetVariantChannels(PawnLoadout, CharacterObject, Variants);
+				LOG_INFO(LogDev, "[HyperFN] {} style {} in the loadout: controller {}, pawn {}", PlayerName, Loadout["charactervariants"], OnController, OnPawn);
+			}
 			SetLoadoutField("Backpack", LoadCosmetic("backpack", "Backpacks", L"/Script/FortniteGame.AthenaBackpackItemDefinition"));
 
 			PlayerStateAsFort->ForceNetUpdate();
@@ -743,6 +896,18 @@ void HyperFNApplyControllerLoadout(AFortPlayerController* Controller, AFortPlaye
 	Apply("pickaxe", "Pickaxes", L"/Script/FortniteGame.AthenaPickaxeItemDefinition", "Pickaxe");
 	Apply("glider", "Gliders", L"/Script/FortniteGame.AthenaGliderItemDefinition", "Glider");
 	Apply("contrail", "Contrails", L"/Script/FortniteGame.AthenaSkyDiveContrailItemDefinition", "SkyDiveContrail");
+
+	// The skin's styles too, so the pawn made from this loadout has them from the start.
+	auto Variants = HyperFNParseVariants(Loadout["charactervariants"]);
+
+	if (!Variants.empty())
+	{
+		static auto CharacterOffset = FindOffsetStruct("/Script/FortniteGame.FortAthenaLoadout", "Character", false);
+		auto CID = CharacterOffset > 0 ? *(UObject**)(__int64(ControllerLoadout) + CharacterOffset) : nullptr;
+
+		if (CID)
+			HyperFNSetVariantChannels(ControllerLoadout, CID, Variants);
+	}
 
 	if (Set)
 		LOG_INFO(LogDev, "[HyperFN] {} locker set on the controller before the pawn ({} items)", PlayerName, Set);
