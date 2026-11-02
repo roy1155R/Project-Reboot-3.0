@@ -361,7 +361,7 @@ static void HyperFNLateTick(AFortGameModeAthena* GameMode, AFortGameStateAthena*
 // Game thread only (HyperFNBusGameTick).
 static void HyperFNStartBus(const char* Reason)
 {
-    if (bStartedBus)
+    if (bStartedBus || Globals::bCreative)
         return;
 
     auto GameMode = (AFortGameModeAthena*)GetWorld()->GetGameMode();
@@ -1393,6 +1393,9 @@ DWORD WINAPI Main(LPVOID)
         if (Settings.count("playlist") && !Settings["playlist"].empty())
             PlaylistName = Settings["playlist"];
 
+        // creative=1: Creative_NoApollo_Terrain with Playlist_PlaygroundV2 (GetPlaylistToUse) instead of Battle Royale; no bus.
+        Globals::bCreative = Settings["creative"] == "1";
+
         if (!Settings.empty())
         {
             Globals::bAutoRestart = true; // turns on the bus auto timer in HandleStartingNewPlayer
@@ -1404,7 +1407,7 @@ DWORD WINAPI Main(LPVOID)
             SetIsLategame(Settings["lategame"] == "1");
 
         HyperFNLoadBusSettings();
-        LOG_INFO(LogDev, "[HyperFN] Settings: playlist {} | bus {} s after {} players | lategame {} | port {} | folder {}", PlaylistName, AutoBusStartSeconds, NumRequiredPlayersToStart, Globals::bLateGame.load(), HyperFN::Port(), HyperFN::Dir());
+        LOG_INFO(LogDev, "[HyperFN] Settings: playlist {} | creative {} | bus {} s after {} players | lategame {} | port {} | folder {}", PlaylistName, Globals::bCreative, AutoBusStartSeconds, NumRequiredPlayersToStart, Globals::bLateGame.load(), HyperFN::Port(), HyperFN::Dir());
         CreateThread(0, 0, HyperFNThread, 0, 0, 0);
     }
 

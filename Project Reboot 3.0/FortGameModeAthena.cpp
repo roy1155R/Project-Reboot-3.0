@@ -1294,7 +1294,7 @@ int AFortGameModeAthena::Athena_PickTeamHook(AFortGameModeAthena* GameMode, uint
 // GetTimeSeconds, so players saw no timer). The aircraft itself is started by HyperFNThread (dllmain) at the deadline.
 void HyperFNStartCountdown(AFortGameModeAthena* GameMode, float Duration)
 {
-	if (HyperFN::BusDeadline.load() || bStartedBus)
+	if (HyperFN::BusDeadline.load() || bStartedBus || Globals::bCreative)
 		return;
 
 	auto GameState = GameMode->GetGameStateAthena();

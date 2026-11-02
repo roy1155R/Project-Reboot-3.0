@@ -3,8 +3,8 @@
 // HyperFN additions: the HyperFN admin panel controls the game server through small files next to the game executable
 // (the server's working directory). Each server started by the panel gets "-hyperfn=<id>" on its command line and
 // its own folder, so several servers can run from one game install:
-//   hyperfn\<id>\server.ini              playlist=<path>, minplayers=<n>, busdelay=<seconds>, lategame=0|1, port=<udp>
-//                                        playlist, lategame and port are read once at start; the bus values every second
+//   hyperfn\<id>\server.ini              playlist=<path>, minplayers=<n>, busdelay=<seconds>, lategame=0|1, port=<udp>, creative=0|1
+//                                        playlist, lategame, port and creative are read once at start; the bus values every second
 //   hyperfn\<id>\command.txt             "startbus" starts the aircraft now; the file is deleted once handled
 //   hyperfn\loadouts\<PlayerName>.txt    character=CID_..., backpack=BID_...; applied when the player's pawn spawns
 // Without -hyperfn the files sit directly in hyperfn\ (older panels).
